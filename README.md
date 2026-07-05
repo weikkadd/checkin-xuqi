@@ -1,5 +1,3 @@
-title: Checkin New Panelemoji: 🎮colorFrom: indigocolorTo: purplesdk: dockerapp_port: 7860pinned: falselicense: mit
-Checkin New Panel 🎮
 自动化签到续期管理平台 - 支持 gaming4free / host2play / katabump 等多个免费服务器自动续期。
 
 ✨ 功能特性
