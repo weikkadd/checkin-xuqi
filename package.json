@@ -1,0 +1,36 @@
+{
+  "name": "checkin-renew-panel",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "tsx server/index.ts",
+    "build": "tsc",
+    "start": "node dist/server/index.js",
+    "db:push": "drizzle-kit push",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate"
+  },
+  "dependencies": {
+    "@trpc/client": "^10.45.2",
+    "@trpc/server": "^10.45.2",
+    "cron": "^3.1.6",
+    "dotenv": "^16.4.5",
+    "drizzle-orm": "^0.30.10",
+    "express": "^4.19.2",
+    "mysql2": "^3.9.7",
+    "rebrowser-playwright": "^1.52.0",
+    "superjson": "^1.13.3",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/cron": "^2.4.1",
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.12.7",
+    "drizzle-kit": "^0.20.17",
+    "ts-node": "^10.9.2",
+    "tsx": "^4.7.2",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

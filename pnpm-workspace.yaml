@@ -1,0 +1,6 @@
+# pnpm workspace 配置
+# 只用于本地开发（CF Pages 前端构建时 cd client && pnpm install）
+# HF Space Docker 构建不需要 workspace
+packages:
+  - "client"
+  - "."
