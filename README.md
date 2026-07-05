@@ -60,7 +60,48 @@ docker run -d --name checkin-api -p 3000:3000 \
 4. 选 DCD-3（1GB）或更高配置
 5. 部署
 
-### 方式 3：zo.computer 部署
+### 方式 3：VPS 部署（最稳定，需 1GB+ 内存）
+
+适合有自己 VPS 的用户，7x24 稳定运行，不休眠。
+
+```bash
+# 1. SSH 连接 VPS
+ssh root@你的VPS_IP -p 端口
+
+# 2. 安装 Node.js 22
+curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+apt install -y nodejs git
+
+# 3. 克隆代码
+git clone https://github.com/weikkadd/checkin-new-panel.git
+cd checkin-new-panel
+
+# 4. 安装依赖
+npm install
+npx playwright install chromium
+npx playwright install-deps chromium
+
+# 5. 配置环境变量
+cat > .env << 'EOF'
+DATABASE_URL=mysql://user:pass@host:4000/db?ssl=...
+TG_BOT_TOKEN=你的TG机器人Token
+TG_CHAT_ID=你的TG群ID
+AUTH_TOKEN=simple-token-ok
+PORT=3000
+GLOBAL_CRON=0 0 */6 * * *
+EOF
+
+# 6. 编译
+npx tsc
+
+# 7. 用 pm2 守护进程（7x24 运行）
+npm install -g pm2
+pm2 start dist/server/index.js --name checkin-api
+pm2 save
+pm2 startup  # 设置开机自启
+```
+
+### 方式 4：zo.computer 部署（免费）
 
 ```bash
 git clone https://github.com/weikkadd/checkin-new-panel.git
@@ -69,9 +110,10 @@ npm install
 npx tsc
 # 配置 .env
 # 用 supervisord 守护进程
+# 配合 CF Worker 保活防休眠
 ```
 
-### 方式 4：HuggingFace Spaces 部署
+### 方式 5：HuggingFace Spaces 部署（免费 16GB）
 
 - SDK: Docker
 - 端口: 7860
