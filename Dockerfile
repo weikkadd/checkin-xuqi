@@ -1,13 +1,16 @@
 FROM mcr.microsoft.com/playwright:v1.45.0-jammy
 
-# 使用 Playwright 镜像自带的非 root 用户 pwuser
-USER pwuser
+# 创建工作目录并赋权给 pwuser
 WORKDIR /app
+RUN chown -R pwuser:pwuser /app
 
-COPY --chown=pwuser package*.json ./
+# 切换到非 root 用户
+USER pwuser
+
+COPY --chown=pwuser:pwuser package*.json ./
 RUN npm install
 
-COPY --chown=pwuser . .
+COPY --chown=pwuser:pwuser . .
 RUN npx tsc
 
 EXPOSE 7860
