@@ -2,6 +2,8 @@ import { useState } from "react";
 import { trpc } from "./lib/trpc";
 import Home from "./pages/Home";
 import Settings from "./components/Settings";
+import LogsPage from "./components/LogsPage";
+import SystemSettings from "./components/SystemSettings";
 
 const TOKEN_KEY = "checkin_token";
 const USERNAME_KEY = "checkin_username";
@@ -18,6 +20,8 @@ export default function App() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [showSettings, setShowSettings] = useState(false);
+  const [showLogs, setShowLogs] = useState(false);
+  const [showSysSettings, setShowSysSettings] = useState(false);
 
   const loginMut = trpc.login.useMutation({
     onSuccess: (data) => {
@@ -105,17 +109,29 @@ export default function App() {
             <span className="text-xl">🔄</span>
             <span className="text-white font-bold text-lg">签到续期任务</span>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 sm:gap-3">
             <span className="text-zinc-300 text-sm hidden sm:inline">👋 {getStoredUsername()}</span>
             <button
+              onClick={() => setShowLogs(true)}
+              className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm text-zinc-300 transition-colors"
+            >
+              📊 日志
+            </button>
+            <button
+              onClick={() => setShowSysSettings(true)}
+              className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm text-zinc-300 transition-colors"
+            >
+              🔧 系统
+            </button>
+            <button
               onClick={() => setShowSettings(true)}
-              className="px-4 py-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm text-zinc-300 transition-colors"
+              className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm text-zinc-300 transition-colors"
             >
               ⚙️ 设置
             </button>
             <button
               onClick={handleLogout}
-              className="px-4 py-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm text-zinc-300 transition-colors"
+              className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm text-zinc-300 transition-colors"
             >
               退出
             </button>
@@ -128,6 +144,8 @@ export default function App() {
       {showSettings && (
         <Settings close={() => setShowSettings(false)} onLogout={handleLogout} />
       )}
+      {showLogs && <LogsPage close={() => setShowLogs(false)} />}
+      {showSysSettings && <SystemSettings close={() => setShowSysSettings(false)} />}
     </div>
   );
 }

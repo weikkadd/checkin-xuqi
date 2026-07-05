@@ -382,7 +382,8 @@ export async function getSystemConfig() {
     free_captcha_enable: 1,
     use_playwright: 1,
     tgBotToken: process.env.TG_BOT_TOKEN ?? "",
-    tgChatId: process.env.TG_CHAT_ID ?? ""
+    tgChatId: process.env.TG_CHAT_ID ?? "",
+    globalCron: process.env.GLOBAL_CRON ?? "0 0 */6 * * *",
   };
 }
 

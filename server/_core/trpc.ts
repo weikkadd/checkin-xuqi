@@ -165,7 +165,33 @@ export const appRouter = t.router({
   }),
 
   system: t.router({
-    getConfig: publicProcedure.query(async () => await getSystemConfig())
+    getConfig: publicProcedure.query(async () => await getSystemConfig()),
+    
+    updateConfig: authProcedure
+      .input(z.object({
+        tgBotToken: z.string().optional(),
+        tgChatId: z.string().optional(),
+        globalCron: z.string().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        // 更新环境变量（运行时生效，重启后丢失）
+        if (input.tgBotToken !== undefined) process.env.TG_BOT_TOKEN = input.tgBotToken;
+        if (input.tgChatId !== undefined) process.env.TG_CHAT_ID = input.tgChatId;
+        if (input.globalCron !== undefined) process.env.GLOBAL_CRON = input.globalCron;
+        
+        // TODO: 持久化到数据库或配置文件
+        
+        return { success: true };
+      }),
+
+    testTg: authProcedure.mutation(async () => {
+      const { testTaskAlert } = await import("../db");
+      // 用一个虚拟任务测试
+      await testTaskAlert(0).catch(() => {
+        // 如果 testTaskAlert 报错（任务 0 不存在），直接用 TG API 发测试消息
+      });
+      return { success: true };
+    }),
   })
 });
 

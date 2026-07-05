@@ -1,6 +1,8 @@
 import { useState, useEffect } from "react";
 import { trpc } from "../lib/trpc";
 import TaskModal from "../components/TaskModal";
+import LogsPage from "../components/LogsPage";
+import SystemSettings from "../components/SystemSettings";
 
 // 计算任务状态
 function getTaskStatus(nextRenew: string, alertDays: number) {
@@ -44,6 +46,8 @@ export default function Home() {
   const [runningTaskId, setRunningTaskId] = useState<number | null>(null);
   const [runResult, setRunResult] = useState<{ [key: number]: string }>({});
   const [copiedId, setCopiedId] = useState<number | null>(null);
+  const [showLogs, setShowLogs] = useState(false);
+  const [showSysSettings, setShowSysSettings] = useState(false);
 
   const taskQuery = trpc.task.getAll.useQuery();
   const runTaskMut = trpc.task.runNow.useMutation();
@@ -352,6 +356,9 @@ export default function Home() {
           )}
         </div>
       </div>
+
+      {showLogs && <LogsPage close={() => setShowLogs(false)} />}
+      {showSysSettings && <SystemSettings close={() => setShowSysSettings(false)} />}
     </div>
   );
 }
