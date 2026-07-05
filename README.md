@@ -1,11 +1,4 @@
-title	Checkin New Panel
-emoji	🎮
-colorFrom	indigo
-colorTo	purple
-sdk	docker
-app_port	7860
-pinned	false
-license	mit
+title: Checkin New Panelemoji: 🎮colorFrom: indigocolorTo: purplesdk: dockerapp_port: 7860pinned: falselicense: mit
 Checkin New Panel 🎮
 自动化签到续期管理平台 - 支持 gaming4free / host2play / katabump 等多个免费服务器自动续期。
 
@@ -30,15 +23,7 @@ Checkin New Panel 🎮
 部署：Docker / DCDeploy / zo.computer / HuggingFace Spaces
 📦 部署方式
 方式 1：Docker 部署（推荐）
-docker build -t checkin-new-panel .
-docker run -d --name checkin-api -p 3000:3000 \
-  -e DATABASE_URL=mysql://... \
-  -e TG_BOT_TOKEN=... \
-  -e TG_CHAT_ID=... \
-  -e AUTH_TOKEN=simple-token-ok \
-  -e PORT=3000 \
-  -e GLOBAL_CRON="0 0 */6 * * *" \
-  checkin-new-panel
+docker build -t checkin-new-panel .docker run -d --name checkin-api -p 3000:3000 \  -e DATABASE_URL=mysql://... \  -e TG_BOT_TOKEN=... \  -e TG_CHAT_ID=... \  -e AUTH_TOKEN=simple-token-ok \  -e PORT=3000 \  -e GLOBAL_CRON="0 0 */6 * * *" \  checkin-new-panel
 方式 2：DCDeploy 部署
 Fork 本仓库
 在 DCDeploy 创建环境，选 GitHub 部署
@@ -46,6 +31,8 @@ Fork 本仓库
 选 DCD-3（1GB）或更高配置
 部署
 方式 3：zo.computer 部署
+bash
+
 git clone https://github.com/weikkadd/checkin-new-panel.git
 cd checkin-new-panel
 npm install
@@ -59,19 +46,27 @@ SDK: Docker
 基础镜像: Playwright 官方镜像（内置 Chromium）
 ⚙️ 环境变量
 必需
-变量	说明	示例
+变量
+说明
+示例
 DATABASE_URL	TiDB/MySQL 数据库连接串	mysql://user:pass@host:4000/db?ssl=...
 AUTH_TOKEN	API 鉴权 token	simple-token-ok
+
 可选
-变量	说明	默认值
+变量
+说明
+默认值
 TG_BOT_TOKEN	Telegram Bot Token	-
 TG_CHAT_ID	Telegram Chat ID	-
 PORT	服务端口	3000
 GLOBAL_CRON	全局 Cron 表达式	0 0 */6 * * *
 TG_API_PROXY	TG API 代理	https://api.telegram.org
+
 🗄️ 数据库表结构
 tasks 表
-字段	类型	说明
+字段
+类型
+说明
 id	int	主键
 name	varchar	任务名称
 url	text	站点地址
@@ -82,13 +77,18 @@ customScript	text	自定义脚本（LOOP_MODE 等）
 cronExpr	varchar	独立 Cron 表达式
 execMode	int	执行模式：1=自动+手动, 2=仅手动, 3=仅自动
 enabled	boolean	是否启用
+
 customScript 配置示例
 gaming4free 循环点击模式
+text
+
 LOOP_MODE:1
 COOLDOWN_SEC:240
 CAP_HOURS:45
 MAX_CLICKS:35
 成功关键词
+text
+
 SUCCESS_KEYWORD:续期成功|renewed|已续期|Renew server
 🎯 任务类型说明
 🔗 link（链接签到）
@@ -107,6 +107,8 @@ Playwright 自动填表 + 提交
 适合普通登录站点
 🔧 管理命令
 supervisord（zo.computer）
+bash
+
 # 重启服务
 supervisorctl -c /etc/zo/supervisord-user.conf restart checkin-api
 
@@ -116,10 +118,14 @@ supervisorctl -c /etc/zo/supervisord-user.conf status
 # 看日志
 tail -f /dev/shm/checkin-api.log
 pm2
+bash
+
 pm2 start dist/server/index.js --name checkin-api
 pm2 restart checkin-api
 pm2 logs checkin-api
 API 接口
+bash
+
 # 健康检查
 curl http://localhost:3000/ping
 
@@ -151,3 +157,6 @@ MIT
 
 👤 Author
 weikkadd (weimei)
+
+text
+
