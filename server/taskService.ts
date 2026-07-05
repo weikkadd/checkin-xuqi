@@ -3,8 +3,11 @@
 // Playwright 模式：过 CF 验证 + 点击按钮（+90 min / Renew）
 // 根据 taskType 和是否遇到 CF 自动选择
 
-import { chromium as stealthChromium } from "rebrowser-playwright";
-import type { Browser, Page } from "rebrowser-playwright";
+import { chromium as stealthChromium } from "playwright-extra";
+import StealthPlugin from "puppeteer-extra-plugin-stealth";
+import type { Browser, Page } from "playwright";
+
+stealthChromium.use(StealthPlugin());
 
 // 任务级锁，防止同一任务并发执行
 // key=task.id, value=启动时间戳

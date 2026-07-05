@@ -17,9 +17,11 @@
     "drizzle-orm": "^0.30.10",
     "express": "^4.19.2",
     "mysql2": "^3.9.7",
-    "rebrowser-playwright": "^1.52.0",
     "superjson": "^1.13.3",
-    "zod": "^3.23.8"
+    "zod": "^3.23.8",
+    "playwright": "^1.45.0",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
   },
   "devDependencies": {
     "@types/cron": "^2.4.1",
