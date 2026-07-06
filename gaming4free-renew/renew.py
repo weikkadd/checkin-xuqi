@@ -285,18 +285,37 @@ def get_cooldown_seconds(sb) -> int:
 
 
 def click_renew_button(sb) -> bool:
-    """找到并点击续期按钮，返回是否点到了"""
+    """找到并点击续期按钮，返回是否点到了
+
+    gaming4free 实际按钮 HTML:
+    <button class="rt-btn-free"
+            x-text="adCooldown > 0 ? cdLabel + ' cd' : '+90 min'"
+            wire:click="extendFree">
+      +90 min
+    </button>
+
+    按钮文字是 Alpine.js 动态生成，:contains 选择器可能找不到
+    必须用 class 选择器：button.rt-btn-free
+    或用 wire:click 属性：button[wire:click="extendFree"]
+    """
     candidates = [
-        # gaming4free 实际按钮文字：+ 90 min
+        # 优先按 class 找（最稳定，gaming4free 专用）
+        'button.rt-btn-free',
+        '.rt-btn-free',
+        'button[wire\\:click="extendFree"]',
+        # gaming4free 付费续期按钮（备用）
+        'button.rt-btn-paid',
+        '.rt-btn-paid',
+        # 兼容文字匹配
+        'button:contains("+90 min")',
         'button:contains("+ 90 min")',
         'button:contains("90 min")',
         'button:contains("+90")',
-        # 兼容其它文字
         'button:contains("Renew")',
         'button:contains("Extend")',
         'button:contains("续期")',
         'button:contains("增加")',
-        'a:contains("+ 90 min")',
+        'a:contains("+90 min")',
         'a:contains("Renew")',
         # 选择器兜底
         "#renew", ".renew", ".btn-renew",
@@ -327,18 +346,26 @@ def click_renew_button(sb) -> bool:
         except Exception:
             continue
 
-    # 终极兜底：用 JS 直接找包含 "90 min" 的可点击元素并点击
+    # 终极兜底：用 JS 直接找 rt-btn-free / 包含 "90 min" 的元素并点击
     # 注意：UC mode 用 CDP，不允许顶层 return，必须用纯表达式
     try:
         clicked = sb.execute_script("""
         (function(){
+            // 优先按 gaming4free 专用 class 找
+            let btn = document.querySelector('button.rt-btn-free, .rt-btn-free, button[wire\\\\:click="extendFree"]');
+            if (btn) {
+                btn.scrollIntoView({block:'center'});
+                btn.click();
+                return 'rt-btn-free: ' + (btn.textContent || '').trim();
+            }
+            // 兜底：扫描所有按钮找包含 90 min 文字的
             const all = document.querySelectorAll('button, a, [role="button"], .btn, input[type="button"], input[type="submit"]');
             for (const el of all) {
                 const t = (el.textContent || el.value || '').trim();
                 if (/\\+?\\s*90\\s*min/i.test(t) || /renew|extend|续期/i.test(t)) {
                     el.scrollIntoView({block:'center'});
                     el.click();
-                    return t;
+                    return 'text-match: ' + t;
                 }
             }
             return '';
@@ -409,17 +436,29 @@ def handle_turnstile(sb) -> bool:
 
 
 def inject_cookies(sb):
-    """如果提供了 cookie 字符串，注入到当前域名"""
+    """如果提供了 cookie 字符串，注入到当前域名，然后刷新页面"""
     if not COOKIE_STR:
-        return
-    log.info("注入自定义 cookie ...")
+        log.info("未配置 GF_COOKIE，跳过 cookie 注入（可能无法登录）")
+        return False
+    log.info(f"注入自定义 cookie（{COOKIE_STR.count(';')+1} 项）...")
+    injected = 0
     for item in COOKIE_STR.split(";"):
+        item = item.strip()
         if "=" in item:
-            k, v = item.strip().split("=", 1)
+            k, v = item.split("=", 1)
+            k = k.strip()
+            v = v.strip()
             try:
                 sb.set_cookie(k, v)
-            except Exception:
-                pass
+                injected += 1
+            except Exception as e:
+                log.warning(f"  cookie [{k}] 注入失败: {e}")
+    log.info(f"✅ 成功注入 {injected} 个 cookie")
+    # 注入后刷新页面让 cookie 生效
+    log.info("🔄 刷新页面让 cookie 生效...")
+    sb.refresh()
+    sb.sleep(3)
+    return True
 
 
 def do_login(sb):
@@ -528,8 +567,8 @@ def run():
         log.info("等待 CF 盾 + 页面 JS 渲染（最长 60s）...")
         cf_keywords = ["just a moment", "checking your browser", "attention required",
                        "verifying you are human", "ddos protection", "cf-browser-verification"]
-        ready_keywords_strong = ["+ 90 min", "90 min remaining", "active session", "cap 48h"]
-        ready_keywords_weak  = ["gaming4free", "console", "remaining"]
+        ready_keywords_strong = ["rt-btn-free", "rt-btn-paid", "active session", "cap 48h",
+                                   "remaining", "expires", "console"]
         page_ready = False
         for i in range(60):
             try:
@@ -542,7 +581,7 @@ def run():
                     log.info(f"⏳ CF 盾未过 ({i}s)，继续等...")
                 time.sleep(1)
                 continue
-            # 强信号：看到 + 90 min / active session / cap 48h 之类，说明页面真的渲染好了
+            # 强信号：看到 rt-btn-free / active session / remaining 等，说明页面真的渲染好了
             if any(kw in body_lower for kw in ready_keywords_strong):
                 log.info(f"✅ 页面已加载完成 ({i}s) - 强信号匹配")
                 page_ready = True
@@ -558,12 +597,32 @@ def run():
         sb.sleep(3)
 
         # Step 3: 注入 cookie / 登录
-        inject_cookies(sb)
+        cookie_injected = inject_cookies(sb)
         if LOGIN_URL:
             sb.open(LOGIN_URL)
             sb.sleep(2)
             do_login(sb)
             sb.open(SITE_URL)
+            sb.sleep(2)
+
+        # 如果注入了 cookie，需要再次等页面渲染（cookie 让我们从登录页跳到控制台）
+        if cookie_injected:
+            log.info("cookie 注入后等待页面重新渲染...")
+            for i in range(30):
+                try:
+                    body_lower = sb.get_text("body").lower()
+                    if any(kw in body_lower for kw in ["rt-btn-free", "active session",
+                                                          "remaining", "console", "+90 min"]):
+                        log.info(f"✅ cookie 生效，页面已进入控制台 ({i}s)")
+                        break
+                    # 还是登录页？
+                    if any(kw in body_lower for kw in ["login", "sign in", "google",
+                                                          "log in", "press start"]):
+                        log.warning(f"⚠️ cookie 注入后仍是登录页 ({i}s)，cookie 可能已失效")
+                        break
+                except Exception:
+                    pass
+                time.sleep(1)
             sb.sleep(2)
 
         screenshot(sb, "dashboard")
