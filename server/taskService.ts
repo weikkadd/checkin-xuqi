@@ -850,12 +850,29 @@ async function runPlaywrightTask(task: CheckinTask): Promise<RunResult> {
   let screenshot: string | undefined;
 
   try {
+    // 终极反检测启动参数
+    const launchArgs = [
+      "--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage",
+      "--disable-gpu", "--disable-infobars", "--window-size=1920,1080",
+      "--disable-blink-features=AutomationControlled",
+      // 新增：隐藏自动化痕迹
+      "--disable-features=IsolateOrigins,site-per-process",
+      "--disable-site-isolation-trials",
+      "--no-first-run", "--no-default-browser-check",
+      "--password-store=basic", "--use-mock-keychain",
+      // 新增：模拟真实 GPU
+      "--enable-unsafe-swiftshader",
+      "--ignore-gpu-blocklist",
+      // 新增：禁用 DevTools 协议检测
+      "--disable-dev-shm-usage",
+      "--remote-debugging-port=0",
+    ];
+
     browser = await stealthChromium.launch({
-      // 使用 headless: false + Xvfb 虚拟显示器，过 Turnstile 通过率高很多
-      // Turnstile 能检测 headless: true，但无法检测虚拟显示器
       headless: process.env.DISPLAY ? false : true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
-             "--disable-blink-features=AutomationControlled", "--disable-infobars", "--window-size=1920,1080"],
+      args: launchArgs,
+      // 新增：忽略默认参数，避免被检测
+      ignoreDefaultArgs: ["--enable-automation"],
     });
 
     // 随机选择 UA 和视口
@@ -863,11 +880,16 @@ async function runPlaywrightTask(task: CheckinTask): Promise<RunResult> {
     const randomViewport = getRandomFromPool(VIEWPORT_POOL);
     console.log(`[taskService] 🕵️ 使用 UA: ${randomUA.substring(0, 50)}...`);
     console.log(`[taskService] 🕵️ 使用视口: ${randomViewport.width}x${randomViewport.height}`);
+    console.log(`[taskService] 🕵️ 使用 headless: ${process.env.DISPLAY ? false : true}`);
 
     const context = await browser.newContext({
       userAgent: randomUA,
       viewport: randomViewport,
       locale: "zh-CN",
+      timezoneId: "Asia/Shanghai",
+      // 新增：地理定位（模拟真实用户）
+      geolocation: { latitude: 31.2304, longitude: 121.4737 },
+      permissions: ["geolocation"],
       extraHTTPHeaders: {
         "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
         "sec-ch-ua": '"Chromium";v="131", "Not_A Brand";v="24", "Google Chrome";v="131"',
@@ -876,34 +898,64 @@ async function runPlaywrightTask(task: CheckinTask): Promise<RunResult> {
       },
     });
 
-    // 增强反检测脚本（11 项指纹伪造）
+    // 终极反检测脚本（15 项指纹伪造）
     await context.addInitScript(() => {
-      // 1. 隐藏 webdriver
+      // 1. 隐藏 webdriver（多种方式）
       Object.defineProperty(navigator, "webdriver", { get: () => undefined });
-      // 2. 伪造 plugins
-      Object.defineProperty(navigator, "plugins", { get: () => [1, 2, 3, 4, 5] });
+      delete (navigator as any).__proto__.webdriver;
+      
+      // 2. 伪造 plugins（更真实）
+      Object.defineProperty(navigator, "plugins", {
+        get: () => {
+          const plugins = [
+            { name: "Chrome PDF Plugin", filename: "internal-pdf-viewer", description: "Portable Document Format" },
+            { name: "Chrome PDF Viewer", filename: "mhjfbmdgcfjbbpaeojofohoefgiehjai", description: "" },
+            { name: "Native Client", filename: "internal-nacl-plugin", description: "" },
+          ];
+          return plugins;
+        },
+      });
+      
       // 3. 伪造 languages
       Object.defineProperty(navigator, "languages", { get: () => ["zh-CN", "zh", "en-US", "en"] });
+      
       // 4. 伪造 platform
       Object.defineProperty(navigator, "platform", { get: () => "Win32" });
+      
       // 5. 伪造 hardwareConcurrency
       Object.defineProperty(navigator, "hardwareConcurrency", { get: () => 8 });
+      
       // 6. 伪造 deviceMemory
       Object.defineProperty(navigator, "deviceMemory", { get: () => 8 });
-      // 7. 伪造 WebGL 指纹
+      
+      // 7. 伪造 WebGL 指纹（更完整）
       const getParameter = WebGLRenderingContext.prototype.getParameter;
       WebGLRenderingContext.prototype.getParameter = function(parameter: number) {
         if (parameter === 37445) return "Intel Inc.";
         if (parameter === 37446) return "Intel Iris OpenGL Engine";
+        if (parameter === 7937) return "Intel Iris OpenGL Engine";
         return getParameter.call(this, parameter);
       };
-      // 8. 伪造 Chrome 对象
-      (window as any).chrome = { runtime: {}, loadTimes: () => ({}), csi: () => ({}), app: {} };
+      
+      // 8. 伪造 Chrome 对象（更完整）
+      (window as any).chrome = {
+        runtime: {
+          OnInstalledReason: { CHROME_UPDATE: "chrome_update", INSTALL: "install", UPDATE: "update" },
+          OnRestartRequiredReason: { APP_UPDATE: "app_update", OS_UPDATE: "os_update", PERIODIC: "periodic" },
+          PlatformArch: { ARM: "arm", X86_32: "x86-32", X86_64: "x86-64" },
+          connect: () => {}, sendMessage: () => {},
+        },
+        loadTimes: () => ({ requestTime: Date.now() / 1000, startLoadTime: Date.now() / 1000, commitLoadTime: Date.now() / 1000, finishDocumentLoadTime: Date.now() / 1000, finishLoadTime: Date.now() / 1000, firstPaintTime: Date.now() / 1000, firstPaintAfterLoadTime: Date.now() / 1000, navigationType: "Other", wasFetchedViaSpdy: true, wasNpnNegotiated: true, npnNegotiatedProtocol: "h2", wasAlternateProtocolAvailable: false, connectionInfo: "h2" }),
+        csi: () => ({ startE: Date.now(), onloadT: Date.now(), pageT: Date.now() - Date.now(), tran: 15 }),
+        app: { isInstalled: false, InstallState: { DISABLED: "disabled", INSTALLED: "installed", NOT_INSTALLED: "not_installed" }, RunningState: { CANNOT_RUN: "cannot_run", READY_TO_RUN: "ready_to_run", RUNNING: "running" } },
+      };
+      
       // 9. 伪造 permissions API
       const originalQuery = (window as any).navigator.permissions.query;
       (window as any).navigator.permissions.query = (parameters: any) => (
         parameters.name === "notifications" ? Promise.resolve({ state: Notification.permission }) : originalQuery(parameters)
       );
+      
       // 10. 伪造 canvas 指纹（添加噪声）
       const toDataURL = HTMLCanvasElement.prototype.toDataURL;
       HTMLCanvasElement.prototype.toDataURL = function(...args: any[]) {
@@ -919,12 +971,35 @@ async function runPlaywrightTask(task: CheckinTask): Promise<RunResult> {
         }
         return toDataURL.apply(this, args as any);
       };
+      
       // 11. 伪造 AudioContext 指纹
       const getChannelData = AudioBuffer.prototype.getChannelData;
       AudioBuffer.prototype.getChannelData = function(channel: number) {
         const data = getChannelData.call(this, channel);
         for (let i = 0; i < data.length; i += 100) { data[i] += Math.random() * 0.0001; }
         return data;
+      };
+      
+      // 12. 新增：隐藏 CDP 检测
+      (window as any).navigator.connection = { rt: 50, downlink: 10, effectiveType: "4g", saveData: false };
+      
+      // 13. 新增：伪造 battery API
+      (navigator as any).getBattery = () => Promise.resolve({
+        charging: true, chargingTime: 0, dischargingTime: Infinity, level: 1,
+        addEventListener: () => {}, removeEventListener: () => {},
+      });
+      
+      // 14. 新增：隐藏 Playwright 痕迹
+      const originalDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
+      Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+        get: function() { return originalDescriptor?.get?.call(this) || 0; },
+      });
+      
+      // 15. 新增：伪造 toString 检测
+      const originalToString = Function.prototype.toString;
+      Function.prototype.toString = function() {
+        if (this === Function.prototype.toString) return "function toString() { [native code] }";
+        return originalToString.call(this);
       };
     });
 
