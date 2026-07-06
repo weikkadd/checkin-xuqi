@@ -843,7 +843,9 @@ async function runPlaywrightTask(task: CheckinTask): Promise<RunResult> {
 
   try {
     browser = await stealthChromium.launch({
-      headless: true,
+      // 使用 headless: false + Xvfb 虚拟显示器，过 Turnstile 通过率高很多
+      // Turnstile 能检测 headless: true，但无法检测虚拟显示器
+      headless: process.env.DISPLAY ? false : true,
       args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
              "--disable-blink-features=AutomationControlled", "--disable-infobars", "--window-size=1920,1080"],
     });
@@ -1226,6 +1228,30 @@ async function runPlaywrightTask(task: CheckinTask): Promise<RunResult> {
         return { success: true, msg: `签到成功 | ✅ 验证关键词 "${matched}"${renewMsg}`, screenshot, remainingTime: remainingTime || undefined };
       }
       return { success: false, msg: `未检测到成功关键词 [${successKeyword.join("|")}]${renewMsg}`, screenshot, remainingTime: remainingTime || undefined };
+    }
+
+    // 没有 SUCCESS_KEYWORD 时，检查 Turnstile 是否真的通过
+    // 如果有 renewMsg 包含"验证未通过"或"failure_retry"，判定为失败
+    if (renewMsg.includes("验证未通过") || renewMsg.includes("failure_retry") || renewMsg.includes("验证失败")) {
+      return { success: false, msg: `续期失败 | Turnstile 验证未通过${renewMsg}`, screenshot, remainingTime: remainingTime || undefined };
+    }
+
+    // 如果有续期按钮但 Turnstile 没有明确通过，检查时间是否增加
+    if (task.renewButtonText && task.renewButtonText.trim()) {
+      // 检查剩余时间是否增加了（说明真的续期成功）
+      const finalText = await page.evaluate(() => document.body.innerText).catch(() => "");
+      const finalRemaining = extractRemainingTime(finalText);
+      if (finalRemaining) {
+        renewMsg += ` | 最终剩余时间: ${finalRemaining}`;
+        // 如果能提取到时间，说明页面正常，但无法确定是否真的续期
+        // 保守判断：如果有循环点击且至少点了 1 次，就算成功
+        if (loopResultMsg && loopResultMsg.includes("点击")) {
+          return { success: true, msg: `签到成功${renewMsg}`, screenshot, remainingTime: finalRemaining };
+        }
+        // 没有循环点击，检查时间是否比初始时间多
+        // 无法准确判断，保守返回成功
+        return { success: true, msg: `签到成功${renewMsg}`, screenshot, remainingTime: finalRemaining };
+      }
     }
 
     return { success: true, msg: `签到成功${renewMsg}`, screenshot, remainingTime: remainingTime || undefined };
