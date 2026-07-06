@@ -34,7 +34,7 @@ WARP_PROXY     = "socks5://127.0.0.1:40000"
 
 MAX_HOURS      = 48            # 续期上限 48 小时（页面显示 'cap 48h'）
 ADD_MINUTES    = 90            # 每次点击 +90 分钟
-COOLDOWN_SEC   = 180           # 冷却 3 分钟（页面显示 expires 2-5min）
+COOLDOWN_SEC   = 285           # 冷却 4 分 45 秒（页面显示 expires 04:45）
 MAX_CLICKS     = 30            # 单次运行最大点击次数（防死循环）
 PAGE_TIMEOUT   = 60            # 单页操作超时
 TURNSTILE_WAIT = 90            # Turnstile 等待上限
