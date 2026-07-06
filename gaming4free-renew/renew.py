@@ -134,17 +134,19 @@ def get_remaining_seconds(sb) -> int:
     """
     try:
         # 优先用 JS 直接抓含 'remaining' 关键词的元素文本
+        # 注意：seleniumbase execute_script 不允许顶层 return，必须用 IIFE 包裹
         try:
             txt = sb.execute_script("""
-            const all = document.querySelectorAll('*');
-            for (const el of all) {
-                const t = (el.textContent || '').trim();
-                // 只匹配直接子节点是文本的元素，避免匹配到父容器
-                if (el.children.length <= 2 && /remaining/i.test(t) && /\\d{1,2}:\\d{2}/.test(t)) {
-                    return t;
+            return (function(){
+                const all = document.querySelectorAll('*');
+                for (const el of all) {
+                    const t = (el.textContent || '').trim();
+                    if (el.children.length <= 2 && /remaining/i.test(t) && /\\d{1,2}:\\d{2}/.test(t)) {
+                        return t;
+                    }
                 }
-            }
-            return '';
+                return '';
+            })();
             """)
             if txt:
                 sec = parse_remaining_seconds(txt)
@@ -213,19 +215,9 @@ def click_renew_button(sb) -> bool:
         'button[class*="extend"]', 'a[class*="extend"]',
     ]
 
-    # 备用方案：通过 JS 找包含 "90 min" 或 "+90" 文字的所有可点击元素
-    js_find_button = """
-    return (function(){
-        const all = document.querySelectorAll('button, a, [role="button"], .btn');
-        for (const el of all) {
-            const t = (el.textContent || '').trim();
-            if (/\\+?\\s*90\\s*min/i.test(t) || /renew|extend|续期/i.test(t)) {
-                return true;
-            }
-        }
-        return false;
-    })();
-    """
+    # 备用方案：通过 JS 找包含 "90 min" 或 "+90" 文字的所有可点击元素（已废弃，改用下面的终极兜底）
+    # 保留变量供参考
+    _js_find_button_doc = "已改用 execute_script 内联 IIFE，详见下方兜底逻辑"
     for sel in candidates:
         try:
             if sb.is_element_visible(sel):
@@ -247,18 +239,21 @@ def click_renew_button(sb) -> bool:
             continue
 
     # 终极兜底：用 JS 直接找包含 "90 min" 的可点击元素并点击
+    # 注意：execute_script 不允许顶层 return，必须用 IIFE 包裹
     try:
         clicked = sb.execute_script("""
-        const all = document.querySelectorAll('button, a, [role="button"], .btn');
-        for (const el of all) {
-            const t = (el.textContent || '').trim();
-            if (/\\+?\\s*90\\s*min/i.test(t)) {
-                el.scrollIntoView({block:'center'});
-                el.click();
-                return t;
+        return (function(){
+            const all = document.querySelectorAll('button, a, [role="button"], .btn, input[type="button"], input[type="submit"]');
+            for (const el of all) {
+                const t = (el.textContent || el.value || '').trim();
+                if (/\\+?\\s*90\\s*min/i.test(t) || /renew|extend|续期/i.test(t)) {
+                    el.scrollIntoView({block:'center'});
+                    el.click();
+                    return t;
+                }
             }
-        }
-        return '';
+            return '';
+        })();
         """)
         if clicked:
             log.info(f"✅ JS 兜底点击续期按钮 [{clicked}]")
@@ -287,9 +282,11 @@ def handle_turnstile(sb) -> bool:
             # 检测 Turnstile 是否已通过：响应 input 有值
             try:
                 val = sb.execute_script(
-                    """let el = document.querySelector('[name="cf-turnstile-response"]');
-                    if (!el) el = document.querySelector('input[name*="turnstile"]');
-                    return el ? el.value : '';"""
+                    """return (function(){
+                        let el = document.querySelector('[name="cf-turnstile-response"]');
+                        if (!el) el = document.querySelector('input[name*="turnstile"]');
+                        return el ? el.value : '';
+                    })();"""
                 )
                 if val and len(val) > 20:
                     log.info(f"✅ Turnstile 已通过 ({i}s)")
