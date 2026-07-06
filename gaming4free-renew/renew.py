@@ -32,9 +32,9 @@ PASSWORD       = os.getenv("MC_PASSWORD", "")           # 密码（如需）
 COOKIE_STR     = os.getenv("GF_COOKIE", "")             # 备用：直接注入 cookie
 WARP_PROXY     = "socks5://127.0.0.1:40000"
 
-MAX_HOURS      = 8             # 续期上限 8 小时（gaming4free 显示 480 cap = 480 min = 8h）
+MAX_HOURS      = 48            # 续期上限 48 小时（页面显示 'cap 48h'）
 ADD_MINUTES    = 90            # 每次点击 +90 分钟
-COOLDOWN_SEC   = 300           # 冷却 5 分钟（页面显示 expires 4-5min，留点 buffer）
+COOLDOWN_SEC   = 180           # 冷却 3 分钟（页面显示 expires 2-5min）
 MAX_CLICKS     = 30            # 单次运行最大点击次数（防死循环）
 PAGE_TIMEOUT   = 60            # 单页操作超时
 TURNSTILE_WAIT = 90            # Turnstile 等待上限
