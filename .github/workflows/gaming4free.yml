@@ -29,32 +29,81 @@ jobs:
       # =========================
       - name: Setup Official WARP Proxy
         run: |
-          # 导入 Cloudflare 官方源
-          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg \
-            | sudo gpg --yes --dearmor \
-            --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
-          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ jammy main" \
-            | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
-          sudo apt-get update
-          sudo apt-get install -y cloudflare-warp
+          set +e
+          # 方案 A：从 Cloudflare 官方 APT 源安装
+          install_warp_via_apt() {
+            echo "==> 方案 A: 通过 Cloudflare 官方 APT 源安装"
+            curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg \
+              | sudo gpg --yes --dearmor \
+              --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+            echo "deb [arch=amd64 signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ jammy main" \
+              | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
+            sudo apt-get update -y
+            sudo apt-get install -y --no-install-recommends cloudflare-warp
+            return $?
+          }
+
+          # 方案 B：直接下载 deb 包安装
+          install_warp_via_deb() {
+            echo "==> 方案 B: 直接下载 cloudflare-warp deb 包安装"
+            cd /tmp
+            # 尝试多个版本
+            for url in \
+              "https://pkg.cloudflareclient.com/pool/jammy/main/c/cloudflare-warp/cloudflare-warp_2024.6.531.0_amd64.deb" \
+              "https://pkg.cloudflareclient.com/pool/jammy/main/c/cloudflare-warp/cloudflare-warp_2024.3.1_amd64.deb" \
+              "https://pkg.cloudflareclient.com/pool/jammy/main/c/cloudflare-warp/cloudflare-warp_2024.1.1_amd64.deb"; do
+              echo "尝试: $url"
+              if curl -fSL -o warp.deb "$url"; then
+                sudo apt-get install -y ./warp.deb || sudo dpkg -i ./warp.deb || true
+                sudo apt-get install -f -y
+                return $?
+              fi
+            done
+            return 1
+          }
+
+          # 尝试安装：先 APT，失败再 deb
+          if ! install_warp_via_apt; then
+            echo "⚠️ APT 方式失败，尝试 deb 直装"
+            install_warp_via_deb
+          fi
+
+          # 验证 warp-cli 是否可用
+          if ! command -v warp-cli >/dev/null 2>&1; then
+            echo "❌ warp-cli 安装失败，两种方式都不行"
+            exit 1
+          fi
+          echo "✅ warp-cli 已安装: $(warp-cli --version 2>&1 | head -1)"
 
           # 注册并设置为纯代理模式（默认 40000 端口）
           warp-cli --accept-tos registration new || true
-          warp-cli --accept-tos mode proxy
-          warp-cli --accept-tos connect
+          warp-cli --accept-tos mode proxy || true
+          warp-cli --accept-tos connect || true
 
           echo "⏳ 等待 WARP 隧道建立 ..."
-          for i in {1..30}; do
-            IP=$(curl -s -x socks5://127.0.0.1:40000 https://api.ipify.org || echo "")
+          IP=""
+          for i in {1..45}; do
+            IP=$(curl -s --max-time 5 -x socks5://127.0.0.1:40000 https://api.ipify.org 2>/dev/null || echo "")
             if [ -n "$IP" ]; then
               echo "✅ WARP ready after ${i}s, exit IP: $IP"
               echo "WARP_IP=$IP" >> $GITHUB_ENV
               break
             fi
+            # 如果 30s 还没起来，重连一次
+            if [ $i -eq 30 ]; then
+              echo "⚠️ 30s 未通，尝试重连..."
+              warp-cli --accept-tos disconnect || true
+              sleep 2
+              warp-cli --accept-tos connect || true
+            fi
             sleep 1
           done
+
           if [ -z "$IP" ]; then
-            echo "❌ WARP 启动失败"
+            echo "❌ WARP 启动失败 - 诊断信息:"
+            warp-cli --accept-tos status 2>&1 || true
+            warp-cli --accept-tos settings 2>&1 || true
+            ss -tlnp 2>/dev/null | grep 40000 || echo "端口 40000 未监听"
             exit 1
           fi
 
