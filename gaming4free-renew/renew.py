@@ -337,7 +337,7 @@ def run():
     # 注意：seleniumbase SB() 不支持 ignore_certificate_errors / disable_cookies / localized
     # 这些参数会引发 TypeError。改用 chromium_arg 传递浏览器启动参数。
     with SB(
-        browser="chromium",
+        browser="chrome",                        # seleniumbase 叫 chrome，不是 chromium
         uc=True,                                # undetected chromedriver
         headless=False,                          # Xvfb 下跑非 headless，反检测更强
         xvfb=True,                               # 自动用 Xvfb 虚拟显示
