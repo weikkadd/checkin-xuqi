@@ -32,9 +32,9 @@ PASSWORD       = os.getenv("MC_PASSWORD", "")           # 密码（如需）
 COOKIE_STR     = os.getenv("GF_COOKIE", "")             # 备用：直接注入 cookie
 WARP_PROXY     = "socks5://127.0.0.1:40000"
 
-MAX_HOURS      = 48            # 续期上限 48 小时
+MAX_HOURS      = 8             # 续期上限 8 小时（gaming4free 显示 480 cap = 480 min = 8h）
 ADD_MINUTES    = 90            # 每次点击 +90 分钟
-COOLDOWN_SEC   = 240           # 冷却 4 分钟
+COOLDOWN_SEC   = 300           # 冷却 5 分钟（页面显示 expires 4-5min，留点 buffer）
 MAX_CLICKS     = 30            # 单次运行最大点击次数（防死循环）
 PAGE_TIMEOUT   = 60            # 单页操作超时
 TURNSTILE_WAIT = 90            # Turnstile 等待上限
@@ -192,6 +192,68 @@ def get_remaining_seconds(sb) -> int:
         return -1
     except Exception as e:
         log.warning(f"提取剩余时间失败: {e}")
+        return -1
+
+
+def get_cooldown_seconds(sb) -> int:
+    """从页面提取 'expires MM:SS' 冷却剩余秒数（-1 表示无冷却）
+
+    gaming4free 冷却中页面会显示 'expires 04:45' 表示还需等 4 分 45 秒才能再次续期
+    """
+    try:
+        # 优先用 JS 找包含 'expires' 关键词的元素文本
+        try:
+            txt = sb.execute_script("""
+            (function(){
+                const all = document.querySelectorAll('*');
+                for (const el of all) {
+                    if (el.children.length > 0) continue;  // 只看叶子节点
+                    const t = (el.textContent || '').trim();
+                    if (/^expires\\s+\\d{1,2}:\\d{2}(:\\d{2})?$/i.test(t)) {
+                        return t;
+                    }
+                }
+                // 兜底：在所有元素里找
+                for (const el of all) {
+                    const t = (el.textContent || '').trim();
+                    if (/expires\\s+\\d{1,2}:\\d{2}/i.test(t) && el.children.length <= 2) {
+                        return t;
+                    }
+                }
+                return '';
+            })()
+            """)
+            if txt:
+                # 提取 MM:SS 或 HH:MM:SS
+                import re
+                m = re.search(r"(\d{1,2}):(\d{2})(?::(\d{2}))?", txt)
+                if m:
+                    if m.group(3):  # HH:MM:SS
+                        sec = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
+                    else:  # MM:SS
+                        sec = int(m.group(1)) * 60 + int(m.group(2))
+                    log.info(f"冷却剩余 [expires] = {txt} → {sec}s")
+                    return sec
+        except Exception:
+            pass
+
+        # 兜底：整页文本找
+        body_text = sb.get_text("body")
+        for line in body_text.split("\n"):
+            if "expires" in line.lower():
+                import re
+                m = re.search(r"(\d{1,2}):(\d{2})(?::(\d{2}))?", line)
+                if m:
+                    if m.group(3):
+                        sec = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
+                    else:
+                        sec = int(m.group(1)) * 60 + int(m.group(2))
+                    if 0 < sec < 3600:  # 冷却一般不会超过 1 小时
+                        log.info(f"冷却剩余 [body line] = {line.strip()} → {sec}s")
+                        return sec
+        return -1
+    except Exception as e:
+        log.warning(f"提取冷却时间失败: {e}")
         return -1
 
 
@@ -471,25 +533,54 @@ def run():
 
         screenshot(sb, "dashboard")
 
-        # Step 4: 主循环 - 反复点击续期直到接近 48h
+        # Step 4: 主循环 - 反复点击续期直到接近 8h 上限
         click_count = 0
         last_sec = get_remaining_seconds(sb)
-        log.info(f"初始剩余: {last_sec}s ({last_sec//3600}h {(last_sec%3600)//60}m)")
+        if last_sec > 0:
+            log.info(f"初始剩余: {last_sec}s ({last_sec//3600}h {(last_sec%3600)//60}m)")
+        else:
+            log.info("初始剩余: 未识别")
 
         while click_count < MAX_CLICKS:
-            # 接近上限就停
-            if last_sec >= (MAX_HOURS - 1) * 3600:
+            # 接近上限就停（剩 30 分钟以内就停，避免溢出）
+            if last_sec > 0 and last_sec >= (MAX_HOURS * 3600 - 1800):
                 log.info(f"🎉 已接近 {MAX_HOURS}h 上限，停止续期")
                 break
 
             # Step 4.1: 点击续期按钮
             if not click_renew_button(sb):
-                screenshot(sb, f"no_btn_{click_count}")
-                log.warning("本次未找到按钮，可能需要刷新页面")
-                sb.refresh()
-                sb.sleep(3)
-                last_sec = get_remaining_seconds(sb)
-                continue
+                # 没找到按钮 - 可能是冷却中（按钮被替换成 "Go Always-On" 或类似）
+                # 检查 expires 时间，自动等到冷却结束
+                cooldown_left = get_cooldown_seconds(sb)
+                if cooldown_left > 0:
+                    wait_sec = cooldown_left + 10  # 多等 10s 保险
+                    log.info(f"⏳ 续期按钮未出现，检测到冷却中 expires={cooldown_left}s，等待 {wait_sec}s")
+                    screenshot(sb, f"cooldown_{click_count}")
+                    # 分段等，每 30s 打一次日志
+                    for i in range(0, wait_sec, 30):
+                        time.sleep(min(30, wait_sec - i))
+                        log.info(f"  冷却等待剩 {wait_sec - i - 30}s")
+                    sb.refresh()
+                    sb.sleep(3)
+                    # 重新检测页面就绪
+                    for _ in range(30):
+                        try:
+                            body_lower = sb.get_text("body").lower()
+                            if any(kw in body_lower for kw in ["remaining", "90 min", "console"]):
+                                break
+                        except Exception:
+                            pass
+                        time.sleep(1)
+                    last_sec = get_remaining_seconds(sb)
+                    continue
+                else:
+                    screenshot(sb, f"no_btn_{click_count}")
+                    log.warning("本次未找到按钮，且无冷却提示，刷新重试")
+                    sb.refresh()
+                    sb.sleep(3)
+                    last_sec = get_remaining_seconds(sb)
+                    click_count += 1
+                    continue
 
             # Step 4.2: 处理可能出现的 Turnstile
             human_sleep(1.0, 2.0)
@@ -501,10 +592,10 @@ def run():
 
             # Step 4.4: 对比时间
             new_sec = get_remaining_seconds(sb)
-            delta = new_sec - last_sec
+            delta = new_sec - last_sec if new_sec > 0 and last_sec > 0 else 0
             log.info(f"点击 #{click_count+1}: {last_sec}s → {new_sec}s (Δ={delta}s)")
 
-            if new_sec > last_sec:
+            if new_sec > last_sec or (last_sec <= 0 and new_sec > 0):
                 click_count += 1
                 log.info(f"✅ 续期成功 (累计 {click_count} 次)")
                 screenshot(sb, f"success_{click_count}")
@@ -519,12 +610,12 @@ def run():
                 click_count += 1   # 计入尝试次数
 
             # Step 4.5: 冷却
-            if last_sec >= (MAX_HOURS - 1) * 3600:
+            if last_sec > 0 and last_sec >= (MAX_HOURS * 3600 - 1800):
                 break
             log.info(f"⏳ 冷却 {COOLDOWN_SEC}s ...")
-            for i in range(COOLDOWN_SEC, 0, -10):
+            for i in range(COOLDOWN_SEC, 0, -30):
                 log.info(f"  剩 {i}s")
-                time.sleep(10)
+                time.sleep(min(30, i))
 
         # 收尾
         final_sec = get_remaining_seconds(sb)
