@@ -472,27 +472,48 @@ def handle_ad_popup(sb) -> bool:
 
 
 def handle_turnstile(sb) -> bool:
-    """处理 Cloudflare Turnstile，返回是否检测到并尝试通过"""
+    """处理 Cloudflare Turnstile 人机验证
+
+    gaming4free 页面会弹出 Turnstile 验证：
+    - 显示 "Verify you're human to continue" + "驗證您是人類"
+    - 有一个 checkbox 需要点击
+    - 在 iframe 内（challenges.cloudflare.com）
+
+    UC mode + WARP IP 下，Turnstile 通常会自动通过
+    如果没自动通过，需要点击 checkbox
+
+    返回 True 如果通过/没检测到，False 如果检测到但没通过
+    """
     try:
-        # Turnstile iframe 选择器
-        iframe_sel = 'iframe[src*="challenges.cloudflare.com"]'
-        if not sb.is_element_present(iframe_sel):
-            log.info("未检测到 Turnstile iframe，跳过")
+        # 用 driver.execute_script 检测 Turnstile iframe（比 sb.is_element_present 稳定）
+        has_turnstile = sb.driver.execute_script(
+            "var iframes = document.querySelectorAll('iframe');"
+            "for (var i = 0; i < iframes.length; i++) {"
+            "  var src = iframes[i].src || '';"
+            "  if (src.indexOf('challenges.cloudflare.com') >= 0 || src.indexOf('turnstile') >= 0) {"
+            "    return true;"
+            "  }"
+            "}"
+            # 也检测 Turnstile div（可能没 iframe）
+            "var ts = document.querySelector('[class*=\"turnstile\"], [id*=\"turnstile\"], .cf-turnstile');"
+            "return !!ts;"
+        )
+
+        if not has_turnstile:
+            # 没检测到 Turnstile，检查是否已通过（有 response token）
             return True
 
-        log.info("🔄 检测到 Cloudflare Turnstile，等待自动通过（UC mode + WARP 大概率自动过）...")
+        log.info("🔄 检测到 Cloudflare Turnstile，尝试通过...")
         screenshot(sb, "turnstile_appear")
 
-        # 等待最多 TURNSTILE_WAIT 秒，每秒检查一次
+        # 等待最多 TURNSTILE_WAIT 秒
         for i in range(TURNSTILE_WAIT):
-            # 检测 Turnstile 是否已通过：响应 input 有值
+            # 1. 检测 Turnstile 是否已通过：response input 有值
             try:
-                val = sb.execute_script(
-                    """(function(){
-                        let el = document.querySelector('[name="cf-turnstile-response"]');
-                        if (!el) el = document.querySelector('input[name*="turnstile"]');
-                        return el ? el.value : '';
-                    })()"""
+                val = sb.driver.execute_script(
+                    "var el = document.querySelector('[name=\"cf-turnstile-response\"]');"
+                    "if (!el) el = document.querySelector('input[name*=\"turnstile\"]');"
+                    "return el ? el.value : '';"
                 )
                 if val and len(val) > 20:
                     log.info(f"✅ Turnstile 已通过 ({i}s)")
@@ -500,20 +521,89 @@ def handle_turnstile(sb) -> bool:
             except Exception:
                 pass
 
-            # 尝试点击 iframe 内的复选框（UC mode 允许跨 iframe）
+            # 2. 检测验证是否已通过（checkbox 变成 ✓ 或文字变成 success）
             try:
-                if i == 3:  # 出现后等 3 秒再尝试点击
-                    sb.switch_to_frame(iframe_sel)
-                    try:
-                        if sb.is_element_visible('input[type="checkbox"]'):
-                            sb.click('input[type="checkbox"]', timeout=3)
-                            log.info("点击 Turnstile checkbox")
-                    except Exception:
-                        pass
-                    finally:
-                        sb.switch_to_default_content()
+                passed = sb.driver.execute_script(
+                    "var iframes = document.querySelectorAll('iframe');"
+                    "for (var i = 0; i < iframes.length; i++) {"
+                    "  var src = iframes[i].src || '';"
+                    "  if (src.indexOf('challenges.cloudflare.com') >= 0) {"
+                    "    var rect = iframes[i].getBoundingClientRect();"
+                    "    if (rect.width < 50) return 'passed';"  # 通过后 iframe 会缩小
+                    "  }"
+                    "}"
+                    "return '';"
+                )
+                if passed == "passed":
+                    log.info(f"✅ Turnstile 已通过（iframe 缩小）({i}s)")
+                    return True
             except Exception:
                 pass
+
+            # 3. 尝试点击 Turnstile checkbox（每 5 秒试一次，最多 3 次）
+            if i in [2, 7, 12, 17, 22]:
+                try:
+                    log.info(f"🖱️ 尝试点击 Turnstile checkbox ({i}s)...")
+                    # 找到 Turnstile iframe
+                    iframe_found = sb.driver.execute_script(
+                        "var iframes = document.querySelectorAll('iframe');"
+                        "for (var i = 0; i < iframes.length; i++) {"
+                        "  var src = iframes[i].src || '';"
+                        "  if (src.indexOf('challenges.cloudflare.com') >= 0) {"
+                        "    return i;"  # 返回索引
+                        "  }"
+                        "}"
+                        "return -1;"
+                    )
+                    if iframe_found >= 0:
+                        # 切换到 iframe
+                        iframes = sb.driver.find_elements("css selector", "iframe")
+                        if iframe_found < len(iframes):
+                            sb.driver.switch_to.frame(iframes[iframe_found])
+                            try:
+                                # 找 checkbox 并点击
+                                checkboxes = sb.driver.find_elements("css selector", "input[type='checkbox']")
+                                for cb in checkboxes:
+                                    if cb.is_displayed():
+                                        cb.click()
+                                        log.info(f"✅ 点击了 Turnstile checkbox")
+                                        break
+                                # 也尝试点击 label/body（有些 Turnstile 用 label）
+                                body = sb.driver.find_element("css selector", "body")
+                                if body:
+                                    body.click()
+                                    log.info(f"✅ 点击了 Turnstile body")
+                            except Exception as e:
+                                log.warning(f"  iframe 内点击失败: {e}")
+                            finally:
+                                sb.driver.switch_to.default_content()
+                except Exception as e:
+                    log.warning(f"  切换 iframe 失败: {e}")
+
+            # 4. 也尝试从父文档直接点击 iframe（坐标点击）
+            if i in [4, 9, 14, 19]:
+                try:
+                    from selenium.webdriver.common.action_chains import ActionChains
+                    # 找到 Turnstile iframe 元素
+                    iframes = sb.driver.find_elements("css selector", "iframe")
+                    ts_iframe = None
+                    for iframe in iframes:
+                        src = iframe.get_attribute("src") or ""
+                        if "challenges.cloudflare.com" in src or "turnstile" in src:
+                            ts_iframe = iframe
+                            break
+                    if ts_iframe:
+                        # 滚动到 iframe
+                        sb.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", ts_iframe)
+                        time.sleep(0.5)
+                        # 用 ActionChains 点击 iframe（move_to_element + click）
+                        ActionChains(sb.driver).move_to_element(ts_iframe).click().perform()
+                        log.info(f"✅ ActionChains 点击 Turnstile iframe")
+                        # 也尝试偏移点击（checkbox 通常在左上角）
+                        ActionChains(sb.driver).move_to_element_with_offset(ts_iframe, 25, 25).click().perform()
+                        log.info(f"✅ ActionChains 偏移点击 Turnstile (25, 25)")
+                except Exception as e:
+                    log.warning(f"  坐标点击失败: {e}")
 
             time.sleep(1)
 
@@ -753,6 +843,12 @@ def run():
         save_html(sb, "dashboard")
         save_body_text(sb, "dashboard")
 
+        # Step 3.6: 检测并处理 Cloudflare Turnstile（页面加载后可能出现）
+        log.info("🛡️ 检测 Cloudflare Turnstile...")
+        handle_turnstile(sb)
+        # 如果 Turnstile 出现并处理了，再等一下让页面刷新
+        sb.sleep(2)
+
         # Step 3.5: 如果当前在服务器列表页，需要点进具体服务器才能看到 +90 min 按钮
         # gaming4free 主页 /servers 显示服务器列表，点进某个服务器才能看到续期按钮
         try:
@@ -812,6 +908,10 @@ def run():
                         sb.sleep(2)
                         screenshot(sb, "server_page")
                         save_body_text(sb, "server_page")
+                        # 进入服务器页面后再次检测 Turnstile
+                        log.info("🛡️ 服务器页面检测 Turnstile...")
+                        handle_turnstile(sb)
+                        sb.sleep(2)
                     else:
                         log.warning("⚠️ 未找到服务器入口")
                         if clicked:
@@ -834,6 +934,9 @@ def run():
             if last_sec > 0 and last_sec >= (MAX_HOURS * 3600 - 1800):
                 log.info(f"🎉 已接近 {MAX_HOURS}h 上限，停止续期")
                 break
+
+            # Step 4.0: 点击前检测 Turnstile（可能在页面交互时弹出）
+            handle_turnstile(sb)
 
             # Step 4.1: 点击续期按钮
             if not click_renew_button(sb):
