@@ -358,9 +358,9 @@ def click_renew_button(sb) -> bool:
         except Exception:
             continue
 
-    # 终极兜底：用 JS 直接找 rt-btn-free / 包含 "90 min" 的元素并点击
-    # 注意：UC mode 用 CDP，不允许顶层 return，必须用纯表达式
-    # 重要：必须检查按钮文字，冷却中文字是 'xx cd'，不能点击
+    # 终极兜底：用 JS 直接调用 Livewire API（绕过 wire:click 的 isTrusted 检查）
+    # gaming4free 按钮使用 Livewire wire:click="extendFree"
+    # 合成的 .click() 无法触发 wire:click，必须用 Livewire.find(id).call('extendFree')
     try:
         clicked = sb.execute_script("""
         (function(){
@@ -372,25 +372,40 @@ def click_renew_button(sb) -> bool:
                 if ((/cd$/i.test(t) && !/min/i.test(t)) || /wait/i.test(t)) {
                     return 'cooldown: ' + t;
                 }
-                // 按钮禁用也不点击
                 if (btn.disabled) {
                     return 'disabled: ' + t;
                 }
-                btn.scrollIntoView({block:'center'});
-                btn.click();
-                return 'rt-btn-free: ' + t;
-            }
-            // 兜底：扫描所有按钮找包含 90 min 文字的
-            const all = document.querySelectorAll('button, a, [role="button"], .btn, input[type="button"], input[type="submit"]');
-            for (const el of all) {
-                const t = (el.textContent || el.value || '').trim();
-                // 必须是 +90 min 文字才点击，冷却中的 'cd' 文字不点
-                if (/\\+?\\s*90\\s*min/i.test(t)) {
-                    if (el.disabled) continue;
-                    el.scrollIntoView({block:'center'});
-                    el.click();
-                    return 'text-match: ' + t;
+
+                // 方法 1: 直接调用 Livewire API（最可靠）
+                if (window.Livewire) {
+                    // 找到按钮所在的 Livewire 组件
+                    let comp = btn.closest('[wire\\\\:id]');
+                    if (comp) {
+                        const cid = comp.getAttribute('wire:id');
+                        try {
+                            Livewire.find(cid).call('extendFree');
+                            return 'livewire-direct: extendFree called (component=' + cid + ', text=' + t + ')';
+                        } catch(e) {
+                            // Livewire.call 失败，继续尝试其他方法
+                        }
+                    }
+                    // 兜底：用 Livewire.dispatch 触发
+                    try {
+                        Livewire.dispatch('extendFree');
+                        return 'livewire-dispatch: extendFree';
+                    } catch(e) {}
                 }
+
+                // 方法 2: 模拟真实鼠标事件序列（mousedown → mouseup → click）
+                btn.scrollIntoView({block:'center'});
+                const rect = btn.getBoundingClientRect();
+                const x = rect.left + rect.width/2;
+                const y = rect.top + rect.height/2;
+                const opts = {bubbles:true, cancelable:true, view:window, clientX:x, clientY:y, button:0, buttons:1, isTrusted:true};
+                btn.dispatchEvent(new MouseEvent('mousedown', opts));
+                btn.dispatchEvent(new MouseEvent('mouseup', opts));
+                btn.dispatchEvent(new MouseEvent('click', opts));
+                return 'mouse-event: ' + t;
             }
             return '';
         })()
@@ -805,10 +820,44 @@ def run():
             human_sleep(1.0, 2.0)
             handle_turnstile(sb)
 
-            # Step 4.3: 等待响应
+            # Step 4.3: 等待 Livewire AJAX 响应
+            # gaming4free 用 Livewire，点击后需要等 AJAX 请求完成
             click_time = time.time()  # 记录点击时间戳
-            human_sleep(3.0, 5.0)
-            sb.sleep(2)
+            log.info("⏳ 等待 Livewire AJAX 响应（最长 30s）...")
+            for wait_i in range(30):
+                time.sleep(1)
+                try:
+                    # 检测 Livewire 是否还在处理请求
+                    loading = sb.execute_script("""
+                    (function(){
+                        // 检测 Livewire loading 状态
+                        if (window.Livewire) {
+                            const els = document.querySelectorAll('[wire\\\\:loading]');
+                            for (let el of els) {
+                                if (el.style.display !== 'none' && el.offsetParent !== null) {
+                                    return 'loading';
+                                }
+                            }
+                        }
+                        // 检测按钮文字是否变成冷却中（说明续期成功了）
+                        const btn = document.querySelector('button.rt-btn-free, .rt-btn-free');
+                        if (btn) {
+                            const t = (btn.textContent || '').trim().toLowerCase();
+                            if (/cd$/i.test(t) || /wait/i.test(t)) {
+                                return 'cooldown:' + t;
+                            }
+                        }
+                        return '';
+                    })()
+                    """)
+                    if loading and loading.startswith("cooldown:"):
+                        log.info(f"✅ 按钮进入冷却状态 [{loading}]，续期请求已处理")
+                        break
+                except Exception:
+                    pass
+
+            # 再等 3 秒让时间更新
+            sb.sleep(3)
 
             # Step 4.4: 对比时间
             # 重要：剩余时间是自然递减的，所以新读的时间会比旧时间少（除非续期生效）
