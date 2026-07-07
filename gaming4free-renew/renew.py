@@ -458,38 +458,52 @@ def click_renew_button(sb) -> bool:
 
 
 def handle_ad_popup(sb) -> bool:
-    """处理 gaming4free 的"watch ad"广告弹窗
+    """处理 gaming4free 的广告弹窗
 
-    点击 'watch ad · +90 min' 按钮后会弹出广告，必须：
-    1. 等广告视频播放完（15-30秒）
-    2. 播完后会出现 "Claim Reward" / "Get +90 min" 之类的按钮
-    3. 点击那个按钮才会加时间
-    4. 不能点 × — 那会取消广告，不给奖励
+    点击 '+90 min' 按钮后，右下角会自动弹出广告（显示 'AD 0:26' 倒计时）
+    广告会自动播放 15-30 秒，播完后时间自动加上
+    不需要点任何按钮！点了 × 反而会取消广告不给奖励
 
-    返回 True 如果检测到广告并处理了，False 如果没检测到广告
+    正确逻辑：
+    1. 等 3 秒让广告加载
+    2. 检测广告元素（AD XX:XX 倒计时文字 + video + iframe）
+    3. 等广告自然消失（最长 90s）
+    4. 不要点 × 或 Skip 按钮
+
+    返回 True 如果检测到广告并等完了，False 如果没检测到广告
     """
-    log.info("📺 检测广告弹窗（最长等 90s）...")
+    log.info("📺 检测广告弹窗（最长等 90s，等广告自然播完）...")
 
     # 先等 3 秒让广告弹窗加载
     time.sleep(3)
 
     ad_detected = False
-    video_ended = False
     last_video_time = -1
     last_video_time_stuck_count = 0
+    no_ad_count = 0
 
     for i in range(90):
         try:
-            # 检测广告状态：iframe + video + 按钮
+            # 检测广告状态
             ad_status = sb.driver.execute_script(
+                # 检测广告文字（如 "AD 0:26"）
+                "var adText = '';"
+                "var allEls = document.querySelectorAll('*');"
+                "for (var e = 0; e < allEls.length; e++) {"
+                "  var t = (allEls[e].textContent || '').trim();"
+                "  if (/^AD\\s+\\d{1,2}:\\d{2}/i.test(t) && allEls[e].children.length === 0) {"
+                "    adText = t; break;"
+                "  }"
+                "}"
+                # 检测广告 iframe
                 "var iframes = document.querySelectorAll('iframe');"
                 "var adIframes = [];"
-                "for (var i = 0; i < iframes.length; i++) {"
-                "  var src = iframes[i].src || '';"
-                "  var w = iframes[i].getBoundingClientRect().width;"
-                "  var h = iframes[i].getBoundingClientRect().height;"
-                "  if (w > 200 && h > 100 && (src.indexOf('ad') >= 0 || src.indexOf('vungle') >= 0 || src.indexOf('unity') >= 0 || src.indexOf('reward') >= 0 || src.indexOf('video') >= 0 || src.indexOf('imasdk') >= 0 || src === '')) {"
-                "    adIframes.push(src.substring(0, 80) + ' (' + w + 'x' + h + ')');"
+                "for (var i2 = 0; i2 < iframes.length; i2++) {"
+                "  var src = iframes[i2].src || '';"
+                "  var w = iframes[i2].getBoundingClientRect().width;"
+                "  var h = iframes[i2].getBoundingClientRect().height;"
+                "  if (w > 200 && h > 100 && (src.indexOf('imasdk') >= 0 || src.indexOf('ad') >= 0 || src.indexOf('vungle') >= 0 || src.indexOf('unity') >= 0 || src.indexOf('reward') >= 0 || src.indexOf('video') >= 0 || src === '')) {"
+                "    adIframes.push(src.substring(0, 60) + ' (' + w + 'x' + h + ')');"
                 "  }"
                 "}"
                 # 检测 video 元素
@@ -498,102 +512,76 @@ def handle_ad_popup(sb) -> bool:
                 "for (var v = 0; v < videos.length; v++) {"
                 "  var vw = videos[v].getBoundingClientRect().width;"
                 "  var vh = videos[v].getBoundingClientRect().height;"
-                "  if (vw > 100 && vh > 100) videoInfo.push('video ' + vw + 'x' + vh + ' paused=' + videos[v].paused + ' time=' + Math.round(videos[v].currentTime) + ' duration=' + (videos[v].duration ? Math.round(videos[v].duration) : 'unknown') + ' ended=' + videos[v].ended);"
+                "  if (vw > 100 && vh > 100) videoInfo.push('paused=' + videos[v].paused + ' time=' + Math.round(videos[v].currentTime) + ' ended=' + videos[v].ended);"
                 "}"
-                # 检测所有按钮（包括 Skip / Reward / Claim）
-                "var allBtns = document.querySelectorAll('button, a, [role=button], .btn');"
-                "var btnInfo = [];"
-                "for (var s = 0; s < allBtns.length; s++) {"
-                "  var t = (allBtns[s].textContent || '').trim();"
-                "  if (t.length > 0 && t.length < 30) btnInfo.push(t + (allBtns[s].disabled ? ' (disabled)' : ''));"
-                "}"
-                "return JSON.stringify({ad: adIframes, video: videoInfo, btns: btnInfo});"
+                "return JSON.stringify({adText: adText, ad: adIframes, video: videoInfo});"
             )
 
-            if ad_status and ad_status != '{"ad":[],"video":[],"btns":[]}':
-                ad_detected = True
-                if i % 5 == 0 or i < 5:
-                    log.info(f"📺 广告状态 ({i}s): {ad_status[:200]}")
-
+            has_ad = False
+            ad_text = ""
+            try:
                 import json
-                try:
-                    data = json.loads(ad_status)
-                except Exception:
-                    data = {}
-
-                # 检测 video 状态
+                data = json.loads(ad_status) if ad_status else {}
+                ad_text = data.get("adText", "")
+                ad_iframes = data.get("ad", [])
                 videos = data.get("video", [])
-                video_playing = False
-                video_completed = False
-                current_video_time = -1
+                if ad_text or ad_iframes or videos:
+                    has_ad = True
+            except Exception:
+                pass
+
+            if has_ad:
+                ad_detected = True
+                no_ad_count = 0
+                # 提取广告倒计时
+                if ad_text:
+                    if i % 5 == 0 or i < 3:
+                        log.info(f"📺 广告播放中 ({i}s): {ad_text}")
+                else:
+                    if i % 5 == 0 or i < 3:
+                        log.info(f"📺 广告播放中 ({i}s): {ad_status[:150]}")
+
+                # 检测视频是否结束
+                video_ended = False
                 for v_info in videos:
-                    if "paused=false" in v_info:
-                        video_playing = True
-                        # 提取 time=XX
-                        import re
+                    if "ended=true" in v_info:
+                        video_ended = True
+                if video_ended:
+                    log.info(f"✅ 广告视频已结束 ({i}s)")
+                    time.sleep(2)
+                    return True
+
+                # 检测视频卡住
+                if videos:
+                    import re
+                    for v_info in videos:
                         m = re.search(r"time=(\d+)", v_info)
                         if m:
-                            current_video_time = int(m.group(1))
-                        # 检测 ended=true
-                        if "ended=true" in v_info:
-                            video_completed = True
-                    if "ended=true" in v_info:
-                        video_completed = True
+                            cur_time = int(m.group(1))
+                            if cur_time == last_video_time:
+                                last_video_time_stuck_count += 1
+                                if last_video_time_stuck_count >= 15:
+                                    log.info(f"⚠️ 视频卡住 15s，认为广告结束")
+                                    time.sleep(2)
+                                    return True
+                            else:
+                                last_video_time = cur_time
+                                last_video_time_stuck_count = 0
+                            break
 
-                # 如果视频在播放，等它播完
-                if video_playing and not video_completed:
-                    if current_video_time == last_video_time:
-                        last_video_time_stuck_count += 1
-                        if last_video_time_stuck_count >= 10:
-                            log.info(f"⚠️ 视频时间卡住 {last_video_time_stuck_count}s，可能广告结束")
-                            video_ended = True
-                    else:
-                        last_video_time = current_video_time
-                        last_video_time_stuck_count = 0
-                    if i % 5 == 0:
-                        log.info(f"⏳ 广告视频播放中 (time={current_video_time}s)")
-                    time.sleep(1)
-                    continue
-
-                # 视频结束或没视频，找 Reward/Claim 按钮（不是 × 关闭按钮！）
-                btns = data.get("btns", [])
-                # 优先找 "claim" / "reward" / "get" / "+90" 按钮
-                reward_keywords = ["claim", "reward", "get", "+90", "got it", "done", "continue", "ok"]
-                # 明确排除的关键词（关闭按钮，点了会取消奖励）
-                close_keywords = ["×", "✕", "close", "cancel", "no thanks", "dismiss"]
-
-                for kw in reward_keywords:
-                    for btn_text in btns:
-                        btn_lower = btn_text.lower()
-                        if kw in btn_lower and not any(c in btn_lower for c in close_keywords):
-                            # 找到了 reward 按钮，点击它
-                            log.info(f"🎯 找到 Reward 按钮: [{btn_text}]")
-                            clicked = sb.driver.execute_script(
-                                "var kw = arguments[0];"
-                                "var allBtns = document.querySelectorAll('button, a, [role=button], .btn');"
-                                "for (var s = 0; s < allBtns.length; s++) {"
-                                "  var t = (allBtns[s].textContent || '').trim().toLowerCase();"
-                                "  if (t.indexOf(kw) >= 0 && t.length < 30 && !allBtns[s].disabled) {"
-                                "    allBtns[s].click();"
-                                "    return t;"
-                                "  }"
-                                "}"
-                                "return '';",
-                                kw
-                            )
-                            if clicked:
-                                log.info(f"✅ 点击了 Reward 按钮 [{clicked}]")
-                                time.sleep(3)
-                                return True
-
-                # 没找到 reward 按钮，继续等
                 time.sleep(1)
 
             elif ad_detected:
-                # 之前检测到广告，现在没了，可能播完了
-                log.info(f"✅ 广告弹窗已消失 ({i}s)")
-                return True
+                # 之前有广告，现在没了
+                no_ad_count += 1
+                if no_ad_count >= 3:
+                    log.info(f"✅ 广告已消失 ({i}s)，认为播完了")
+                    return True
+                time.sleep(1)
             else:
+                # 还没检测到广告
+                if i > 0 and i % 10 == 0:
+                    log.info(f"⏳ 等广告出现 ({i}s)...")
                 time.sleep(1)
 
         except Exception as e:
@@ -602,10 +590,10 @@ def handle_ad_popup(sb) -> bool:
             time.sleep(1)
 
     if ad_detected:
-        log.info("📺 广告处理超时（90s）")
+        log.info("📺 广告处理超时（90s），继续后续流程")
         return True
     else:
-        log.info("📺 未检测到广告弹窗")
+        log.info("📺 未检测到广告弹窗，可能按钮没生效或已直接给时间")
         return False
 
 
