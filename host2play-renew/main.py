@@ -30,8 +30,9 @@ RENEW_URL = os.getenv("H2P_RENEW_URL", "")
 # Cookie 字符串
 COOKIE_STR = os.getenv("H2P_COOKIE", "")
 
-# WARP 代理（DrissionPage 用 HTTP 代理更稳定）
-WARP_PROXY = os.getenv("WARP_PROXY", "socks5://127.0.0.1:40000")
+# WARP 代理（fscarmen/warp-on-actions 已启用系统级 WARP，Chrome 直连即可走 WARP）
+# 不需要再设置 Chrome 代理，否则 DrissionPage 会拒绝 socks5 协议
+WARP_PROXY = os.getenv("WARP_PROXY", "")  # 留空 = 不用代理，走系统 WARP
 
 # 续期参数
 MAX_RETRY = 5          # reCAPTCHA 最多重试次数
@@ -464,9 +465,14 @@ def run():
     co.set_argument('--disable-gpu')
     co.set_argument('--lang=en-US')
     co.set_argument('--user-agent', 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36')
-    # WARP 代理（DrissionPage 不支持 socks5，用 Chrome --proxy-server 参数）
-    # Chrome 原生支持 socks5 代理
-    co.set_argument(f'--proxy-server={WARP_PROXY}')
+    # WARP 代理：fscarmen/warp-on-actions 已启用系统级 WARP（全局代理）
+    # Chrome 直接连网就走 WARP，不需要再设置 Chrome 代理
+    # 如果 WARP_PROXY 有值，用 Chrome --proxy-server（但 DrissionPage 不支持 socks5）
+    if WARP_PROXY and not WARP_PROXY.startswith("socks"):
+        co.set_argument(f'--proxy-server={WARP_PROXY}')
+        log.info(f"🌐 使用代理: {WARP_PROXY}")
+    else:
+        log.info("🌐 走系统级 WARP（fscarmen/warp-on-actions 已启用）")
 
     page = ChromiumPage(co)
     page.set.timeouts(PAGE_TIMEOUT)
