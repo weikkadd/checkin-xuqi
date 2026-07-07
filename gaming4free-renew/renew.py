@@ -70,6 +70,11 @@ def tg(msg: str, silent: bool = False):
         msg: 消息内容
         silent: 是否静默发送（无通知音）
     """
+    # 自动在消息开头加上 gaming4free 标识（如果还没有的话）
+    prefix = "🎮 <b>gaming4free</b>\n"
+    if "gaming4free" not in msg.lower():
+        msg = prefix + msg
+
     # 调试日志：每次调用都打印（前 50 字）
     msg_preview = msg.replace("\n", " | ")[:80]
     log.info(f"📧 TG 通知调用: silent={silent}, msg={msg_preview}")
