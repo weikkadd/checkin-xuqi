@@ -326,12 +326,18 @@ def click_renew_button(sb) -> bool:
     # 备用方案：通过 JS 找包含 "90 min" 或 "+90" 文字的所有可点击元素（已废弃，改用下面的终极兜底）
     # 保留变量供参考
     _js_find_button_doc = "已改用 execute_script 内联 IIFE，详见下方兜底逻辑"
-    for sel in candidates:
+
+    # gaming4free 用 Livewire 框架，wire:click="extendFree" 不响应合成 .click()
+    # 必须用统一的 JS 兜底逻辑（包含 Livewire API 调用），所以这里直接跳到兜底
+    # 不再用 seleniumbase 的 sb.click() 因为它无法触发 wire:click
+
+    # 但还是先用 seleniumbase 检查按钮是否可见（用于冷却检测）
+    for sel in candidates[:6]:  # 只检查前 6 个 gaming4free 专用选择器
         try:
             if sb.is_element_visible(sel):
                 # 检查按钮是否处于冷却中（gaming4free 按钮文字会变成 'xx cd'）
                 try:
-                    btn_text = sb.get_text(sel).strip().lower() if sel.startswith(("button", ".rt-btn")) else ""
+                    btn_text = sb.get_text(sel).strip().lower()
                 except Exception:
                     btn_text = ""
                 if btn_text and ("cd" in btn_text and "min" not in btn_text):
@@ -340,21 +346,8 @@ def click_renew_button(sb) -> bool:
                 if btn_text and "wait" in btn_text:
                     log.info(f"⏳ 按钮 [{sel}] 显示等待中（文字: {btn_text}），跳过点击")
                     return False
-
-                # 模拟人类阅读
-                human_sleep(1.0, 2.5)
-                # 滚到可视区
-                sb.scroll_to(sel)
-                human_sleep(0.3, 0.8)
-                # UC mode 推荐用 .click()，必要时用 js click
-                try:
-                    sb.click(sel, timeout=8)
-                except Exception:
-                    sb.execute_script(
-                        "document.querySelector(arguments[0]).click();", sel
-                    )
-                log.info(f"✅ 点击续期按钮 [{sel}]")
-                return True
+                # 按钮可用，直接跳到 JS 兜底（用 Livewire API 点击）
+                break
         except Exception:
             continue
 
