@@ -329,6 +329,18 @@ def click_renew_button(sb) -> bool:
     for sel in candidates:
         try:
             if sb.is_element_visible(sel):
+                # 检查按钮是否处于冷却中（gaming4free 按钮文字会变成 'xx cd'）
+                try:
+                    btn_text = sb.get_text(sel).strip().lower() if sel.startswith(("button", ".rt-btn")) else ""
+                except Exception:
+                    btn_text = ""
+                if btn_text and ("cd" in btn_text and "min" not in btn_text):
+                    log.info(f"⏳ 按钮 [{sel}] 处于冷却中（文字: {btn_text}），跳过点击")
+                    return False
+                if btn_text and "wait" in btn_text:
+                    log.info(f"⏳ 按钮 [{sel}] 显示等待中（文字: {btn_text}），跳过点击")
+                    return False
+
                 # 模拟人类阅读
                 human_sleep(1.0, 2.5)
                 # 滚到可视区
@@ -348,21 +360,33 @@ def click_renew_button(sb) -> bool:
 
     # 终极兜底：用 JS 直接找 rt-btn-free / 包含 "90 min" 的元素并点击
     # 注意：UC mode 用 CDP，不允许顶层 return，必须用纯表达式
+    # 重要：必须检查按钮文字，冷却中文字是 'xx cd'，不能点击
     try:
         clicked = sb.execute_script("""
         (function(){
             // 优先按 gaming4free 专用 class 找
             let btn = document.querySelector('button.rt-btn-free, .rt-btn-free, button[wire\\\\:click="extendFree"]');
             if (btn) {
+                const t = (btn.textContent || '').trim().toLowerCase();
+                // 冷却中：文字是 'xx cd' 或包含 'wait'，不点击
+                if ((/cd$/i.test(t) && !/min/i.test(t)) || /wait/i.test(t)) {
+                    return 'cooldown: ' + t;
+                }
+                // 按钮禁用也不点击
+                if (btn.disabled) {
+                    return 'disabled: ' + t;
+                }
                 btn.scrollIntoView({block:'center'});
                 btn.click();
-                return 'rt-btn-free: ' + (btn.textContent || '').trim();
+                return 'rt-btn-free: ' + t;
             }
             // 兜底：扫描所有按钮找包含 90 min 文字的
             const all = document.querySelectorAll('button, a, [role="button"], .btn, input[type="button"], input[type="submit"]');
             for (const el of all) {
                 const t = (el.textContent || el.value || '').trim();
-                if (/\\+?\\s*90\\s*min/i.test(t) || /renew|extend|续期/i.test(t)) {
+                // 必须是 +90 min 文字才点击，冷却中的 'cd' 文字不点
+                if (/\\+?\\s*90\\s*min/i.test(t)) {
+                    if (el.disabled) continue;
                     el.scrollIntoView({block:'center'});
                     el.click();
                     return 'text-match: ' + t;
@@ -372,6 +396,9 @@ def click_renew_button(sb) -> bool:
         })()
         """)
         if clicked:
+            if clicked.startswith("cooldown:") or clicked.startswith("disabled:"):
+                log.info(f"⏳ JS 检测按钮处于冷却/禁用状态 [{clicked}]，跳过点击")
+                return False
             log.info(f"✅ JS 兜底点击续期按钮 [{clicked}]")
             return True
     except Exception as e:
@@ -740,12 +767,12 @@ def run():
 
             # Step 4.1: 点击续期按钮
             if not click_renew_button(sb):
-                # 没找到按钮 - 可能是冷却中（按钮被替换成 "Go Always-On" 或类似）
-                # 检查 expires 时间，自动等到冷却结束
+                # 按钮没点到 - 可能是冷却中（按钮文字变成 'xx cd'）或不在页面
+                # 检查 expires / cooldown 时间，自动等到冷却结束
                 cooldown_left = get_cooldown_seconds(sb)
                 if cooldown_left > 0:
                     wait_sec = cooldown_left + 10  # 多等 10s 保险
-                    log.info(f"⏳ 续期按钮未出现，检测到冷却中 expires={cooldown_left}s，等待 {wait_sec}s")
+                    log.info(f"⏳ 续期按钮冷却中，expires={cooldown_left}s，等待 {wait_sec}s 后重试")
                     screenshot(sb, f"cooldown_{click_count}")
                     # 分段等，每 30s 打一次日志
                     for i in range(0, wait_sec, 30):
@@ -757,7 +784,8 @@ def run():
                     for _ in range(30):
                         try:
                             body_lower = sb.get_text("body").lower()
-                            if any(kw in body_lower for kw in ["remaining", "90 min", "console"]):
+                            if any(kw in body_lower for kw in ["remaining", "90 min", "console",
+                                                                  "uptime", "restart"]):
                                 break
                         except Exception:
                             pass
