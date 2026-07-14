@@ -201,6 +201,14 @@ def solve_turnstile(sb):
         if get_turnstile_token(sb):
             log(f"✅ Turnstile 自动通过! (等待 {i*0.5:.0f}s)")
             return True
+        # 也检查页面上是否显示「成功」文字 (Turnstile 可能已通过但 token 存在 iframe 里)
+        try:
+            page_text = sb.execute_script("return document.body ? document.body.innerText : '';")
+            if page_text and ("成功" in page_text or "Success" in page_text or "success" in page_text):
+                log(f"✅ 检测到 Turnstile 已通过 (页面显示「成功」), 等待 {i*0.5:.0f}s")
+                return True
+        except:
+            pass
         time.sleep(0.5)
 
     # 方法 1: uc_gui_click_captcha
