@@ -133,31 +133,47 @@ def get_remaining_time(sb):
 def click_plus_90(sb):
     """点击 +90 min 按钮"""
     selectors = [
+        'span:has-text("+ 90 min")',
+        'span:has-text("+90 min")',
+        'a:has-text("+ 90 min")',
+        'a:has-text("+90 min")',
         'button:has-text("+ 90")',
         'button:has-text("+90")',
-        'button:has-text("90 min")',
-        'button:has-text("90min")',
-        'a:has-text("+ 90")',
-        'a:has-text("+90")',
-        'a:has-text("90 min")',
         '[class*="extend"]',
         '[class*="renew"]',
         '[class*="add-time"]',
         '[class*="plus"]',
-        '[id*="extend"]',
-        '[id*="renew"]',
+        '[onclick*="90"]',
+        '[onclick*="extend"]',
     ]
 
     for sel in selectors:
         try:
             count = sb.execute_script(f"return document.querySelectorAll('{sel}').length;")
             if count > 0:
-                sb.execute_script(f"document.querySelector('{sel}')?.scrollIntoView({{block:'center'}})")
-                time.sleep(0.5)
-                # 用 JS 点击 (更可靠)
-                sb.execute_script(f"document.querySelector('{sel}')?.click();")
-                log(f"✅ 已点击 +90 min 按钮 (选择器: {sel})")
-                return True
+                # 用 JS 找到包含 +90 min 的元素并点击 (包括父元素)
+                clicked = sb.execute_script("""
+                    var els = document.querySelectorAll(arguments[0]);
+                    for (var i = 0; i < els.length; i++) {
+                        var el = els[i];
+                        // 如果是 span, 点击它的父元素 (button/a)
+                        if (el.tagName === 'SPAN') {
+                            var parent = el.closest('a, button, [role="button"], [class*="btn"]');
+                            if (parent) {
+                                parent.scrollIntoView({block: 'center'});
+                                parent.click();
+                                return true;
+                            }
+                        }
+                        el.scrollIntoView({block: 'center'});
+                        el.click();
+                        return true;
+                    }
+                    return false;
+                """, sel)
+                if clicked:
+                    log(f"✅ 已点击 +90 min 按钮 (选择器: {sel})")
+                    return True
         except:
             continue
 
