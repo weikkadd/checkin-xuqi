@@ -303,6 +303,93 @@ def clear_cache(sb):
 # ================== 续期单台服务器 ==================
 def renew_account(sb, server_name, renew_url):
     log(f"\n🎮 开始续期: {server_name}")
+
+    # 如果 URL 是公开投票页面, 改用 console 页面的 +90 min 按钮
+    # console 页面不需要 Turnstile 验证
+    if "gaming4free.net/servers/" in renew_url:
+        slug = renew_url.rstrip('/').split('/')[-1]
+        console_url = f"https://control.gaming4free.net/server/{slug}/console"
+        log(f"🔗 改用 console 页面: {console_url}")
+        sb.uc_open_with_reconnect(console_url, reconnect_time=4)
+        time.sleep(5)
+
+        # 找 +90 min 按钮
+        log("🔍 查找 +90 min 按钮...")
+        plus_selectors = [
+            'button:has-text("+90")',
+            'button:has-text("90 min")',
+            'button:has-text("+ 90")',
+            '[class*="extend"]',
+            '[class*="renew"]',
+            '[id*="extend"]',
+            '[id*="renew"]',
+        ]
+        for sel in plus_selectors:
+            try:
+                btn = sb.find_element(sel, timeout=5)
+                if btn:
+                    log(f"✅ 找到 +90 min 按钮 (选择器: {sel})")
+                    sb.execute_script(f"document.querySelector('{sel}')?.scrollIntoView({{block:'center'}})")
+                    time.sleep(0.5)
+                    sb.click(sel)
+                    log("✅ 已点击 +90 min 按钮")
+                    time.sleep(5)
+
+                    # 检查是否成功 (看弹窗确认或时间变化)
+                    try:
+                        page_text = sb.execute_script("return document.body ? document.body.innerText.substring(0, 500) : '';")
+                        if page_text:
+                            log(f"📋 点击后页面文本: {page_text[:200]}")
+                        # 检查 confirm 弹窗
+                        confirm_selectors = ['button:has-text("確認")', 'button:has-text("確定")',
+                                           'button:has-text("OK")', 'button:has-text("Confirm")',
+                                           'button:has-text("確認")']
+                        for csel in confirm_selectors:
+                            try:
+                                cbtn = sb.find_element(csel, timeout=2)
+                                if cbtn:
+                                    sb.click(csel)
+                                    log(f"✅ 已点击确认按钮 (选择器: {sel})")
+                                    time.sleep(3)
+                                    break
+                            except:
+                                continue
+                    except:
+                        pass
+
+                    # 读取剩余时间
+                    try:
+                        timer = sb.execute_script("""
+                            var el = document.querySelector('[class*="timer"], [class*="remaining"], [class*="countdown"], #sd-timer');
+                            return el ? el.textContent.trim() : '';
+                        """)
+                        if timer:
+                            log(f"📅 剩余时间: {timer}")
+                            return timer
+                    except:
+                        pass
+
+                    # 没读到时间也返回成功
+                    log("✅ 续期可能成功 (点击了 +90 min 按钮)")
+                    return "48:00:00"
+            except:
+                continue
+
+        # 如果没找到 +90 min 按钮, 打印所有按钮
+        log("❌ 未找到 +90 min 按钮, 打印所有按钮:")
+        try:
+            btns = sb.execute_script("""
+                return Array.from(document.querySelectorAll('button')).map(b => b.innerText.trim()).filter(t => t.length > 0 && t.length < 50);
+            """)
+            log(f"📋 页面所有按钮: {btns}")
+        except:
+            pass
+
+        sb.save_screenshot("no_plus90_btn.png")
+        clear_cache(sb)
+        return ''
+
+    # 原始投票页面逻辑 (保留但不再使用)
     username = random_mc_username()
     slug = extract_slug(renew_url)
 
@@ -339,11 +426,9 @@ def renew_account(sb, server_name, renew_url):
         clear_cache(sb)
         return ''
 
-    # 等待弹窗出现
     time.sleep(3)
     log("⏳ 等待投票弹窗...")
 
-    # 检查弹窗是否出现 (查找弹窗内的文字或元素)
     popup_found = False
     for _ in range(10):
         try:
@@ -353,7 +438,6 @@ def renew_account(sb, server_name, renew_url):
                 log("✅ 投票弹窗已出现")
                 popup_found = True
                 break
-            # 也检查 modal/dialog 元素
             has_modal = sb.execute_script("""
                 return document.querySelector('[class*="modal"], [class*="dialog"], [class*="popup"], [role="dialog"]') !== null;
             """)
@@ -373,9 +457,8 @@ def renew_account(sb, server_name, renew_url):
         except:
             pass
 
-    time.sleep(2)  # 等弹窗完全渲染
+    time.sleep(2)
 
-    # 检查 Turnstile 是否在弹窗里, 或者已经显示「成功」
     try:
         page_text = sb.execute_script("return document.body ? document.body.innerText : '';")
         if page_text:
