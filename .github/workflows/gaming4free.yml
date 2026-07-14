@@ -35,23 +35,19 @@ jobs:
           pip install seleniumbase
           seleniumbase install chromedriver
 
-      - name: 🛡️ 启用 WARP 网络
+      - name: 🛡️ 启用 WARP 网络 (proxy 模式)
         uses: fscarmen/warp-on-actions@v1.3
         with:
           stack: dual
-          mode: client
+          mode: proxy
 
-      - name: 🔧 修复 DNS
+      - name: 🔧 验证 WARP 连接
         run: |
-          sudo systemctl stop systemd-resolved 2>/dev/null || true
-          sudo systemctl disable systemd-resolved 2>/dev/null || true
-          sudo rm -f /etc/resolv.conf
-          echo -e "nameserver 1.1.1.1\nnameserver 8.8.8.8" | sudo tee /etc/resolv.conf
-          sleep 2
-          echo "[INFO] 当前出口 IP:"
-          curl -s --max-time 10 https://api.ipify.org && echo
+          sleep 3
+          echo "[INFO] WARP SOCKS5 代理测试:"
+          curl -x socks5://127.0.0.1:40000 -s --max-time 10 https://api.ipify.org && echo
           echo "[INFO] WARP Trace:"
-          curl -s --max-time 10 https://www.cloudflare.com/cdn-cgi/trace | grep -E 'ip=|warp=|loc=' || true
+          curl -x socks5://127.0.0.1:40000 -s --max-time 10 https://www.cloudflare.com/cdn-cgi/trace | grep -E 'ip=|warp=|loc=' || true
 
       - name: 🚀 运行续期脚本 (WARP 系统代理)
         env:

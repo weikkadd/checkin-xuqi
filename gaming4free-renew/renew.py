@@ -382,10 +382,10 @@ def run_script():
 
     log(f"📋 共 {len(ACCOUNTS)} 个账号")
 
-    # WARP 是系统级代理, 不需要在 SeleniumBase 里配 proxy
-    # 浏览器会自动走 WARP 的系统网络
-    sb_kwargs = {"uc": True, "test": True}
-    log("🛡️ 使用 WARP 系统级代理 (无需配置 proxy 参数)")
+    # WARP proxy 模式, SOCKS5 端口 40000
+    WARP_PROXY = "socks5://127.0.0.1:40000"
+    sb_kwargs = {"uc": True, "test": True, "proxy": WARP_PROXY}
+    log(f"🛡️ 使用 WARP 代理: {WARP_PROXY}")
 
     log("🔧 启动浏览器...")
     with SB(**sb_kwargs) as sb:
