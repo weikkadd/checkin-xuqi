@@ -458,10 +458,15 @@ def run_script():
 
     log(f"📋 共 {len(ACCOUNTS)} 个账号")
 
-    # WARP proxy 模式, SOCKS5 端口 40000
-    WARP_PROXY = "socks5://127.0.0.1:40000"
-    sb_kwargs = {"uc": True, "test": True, "proxy": WARP_PROXY}
-    log(f"🛡️ 使用 WARP 代理: {WARP_PROXY}")
+    # sing-box 代理 (家宽节点, Turnstile 通过率比 WARP 高)
+    IS_PROXY_ENV = os.environ.get("IS_PROXY", "false").lower() == "true"
+    PROXY_SERVER_ENV = os.environ.get("PROXY_SERVER", "").strip()
+    sb_kwargs = {"uc": True, "test": True}
+    if IS_PROXY_ENV and PROXY_SERVER_ENV:
+        sb_kwargs["proxy"] = PROXY_SERVER_ENV
+        log(f"🔗 使用家宽代理: {PROXY_SERVER_ENV}")
+    else:
+        log("🌐 直连模式 (无代理)")
 
     log("🔧 启动浏览器...")
     with SB(**sb_kwargs) as sb:

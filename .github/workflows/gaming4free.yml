@@ -35,30 +35,40 @@ jobs:
           pip install seleniumbase
           seleniumbase install chromedriver
 
-      - name: 🛡️ 启用 WARP 网络
-        uses: fscarmen/warp-on-actions@v1.3
-        with:
-          stack: dual
-          mode: client
-
-      - name: 🔧 切换 WARP 为 proxy 模式 + 验证
+      - name: 🔗 设置代理 (sing-box, 家宽节点)
+        continue-on-error: true
+        env:
+          NODE_LINK: ${{ secrets.PROXY_URL }}
         run: |
-          sudo warp-cli --accept-tos mode proxy
-          sleep 3
-          echo "[INFO] WARP SOCKS5 代理测试:"
-          curl -x socks5://127.0.0.1:40000 -s --max-time 10 https://api.ipify.org && echo
-          echo "[INFO] WARP Trace:"
-          curl -x socks5://127.0.0.1:40000 -s --max-time 10 https://www.cloudflare.com/cdn-cgi/trace | grep -E 'ip=|warp=|loc=' || true
+          if [ -n "$NODE_LINK" ]; then
+            PROTO=$(echo "$NODE_LINK" | cut -d':' -f1)
+            echo "[INFO] PROXY_URL 协议: $PROTO"
+            bash <(wget -qO- https://main.ssss.nyc.mn/setup_proxy.sh)
+          else
+            echo "[WARN] PROXY_URL 未配置, 直连模式"
+          fi
 
-      - name: 🚀 运行续期脚本 (WARP 系统代理)
+      - name: 🔧 验证代理连接
+        run: |
+          if [ "${IS_PROXY}" = "true" ]; then
+            echo "[INFO] 代理出口 IP:"
+            curl -x "$PROXY_SERVER" -s --max-time 10 https://api.ipify.org && echo
+          else
+            echo "[WARN] 代理未启用"
+            curl -s --max-time 10 https://api.ipify.org && echo
+          fi
+
+      - name: 🚀 运行续期脚本
         env:
           PYTHONIOENCODING: utf-8
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           GAME4FREE_ACCOUNT: ${{ secrets.GAME4FREE_ACCOUNT }}
+          IS_PROXY: ${{ env.IS_PROXY }}
+          PROXY_SERVER: ${{ env.PROXY_SERVER }}
         working-directory: gaming4free-renew
         run: |
-          echo "🛡️ 使用 WARP 系统级代理"
+          echo "代理状态: IS_PROXY=${IS_PROXY:-false}, PROXY_SERVER=${PROXY_SERVER:-无}"
           xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python renew.py
 
       - name: 📸 上传截图
