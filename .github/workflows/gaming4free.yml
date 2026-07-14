@@ -1,198 +1,65 @@
-name: gaming4free 自动续期 (WARP + Python, 多账号)
-
+name: Game4Free-Renew
 on:
   workflow_dispatch:
-  # ⏸️ 已暂停定时任务 (需要恢复时取消下面的注释)
-  # push:
-  #   branches: [ main, master ]
-  # schedule:
-  #   # 每 2 小时跑一次（错峰避开整点拥堵）
-  #   # gaming4free 上限 48h，2h 一次足够保险
-  #   - cron: "13 */2 * * *"
-
-# 同一时刻只允许一个续期任务跑（所有账号串行）
-concurrency:
-  group: gaming4free-renew
-  cancel-in-progress: false
+  schedule:
+    - cron: '0 1 * * *'
 
 jobs:
-  run:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 120
+  renew:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
+      actions: write
       contents: read
 
-    strategy:
-      # 3 个账号，串行跑（避免同时登录互相挤掉）
-      matrix:
-        account: [1, 2, 3]
-      max-parallel: 1
-      fail-fast: false
-
     steps:
-      - name: 检出代码
+      - name: 📥 拉取代码
         uses: actions/checkout@v4
 
-      # =========================
-      # 🟡 1. 安装官方 WARP 客户端（纯 SOCKS5 模式）
-      # =========================
-      - name: 安装 WARP 代理
-        run: |
-          set +e
-          # 方案 A：从 Cloudflare 官方 APT 源安装
-          install_warp_via_apt() {
-            echo "==> 方案 A: 通过 Cloudflare 官方 APT 源安装"
-            curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg \
-              | sudo gpg --yes --dearmor \
-              --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
-            echo "deb [arch=amd64 signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ jammy main" \
-              | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
-            sudo apt-get update -y
-            sudo apt-get install -y --no-install-recommends cloudflare-warp
-            return $?
-          }
-
-          # 方案 B：直接下载 deb 包安装
-          install_warp_via_deb() {
-            echo "==> 方案 B: 直接下载 cloudflare-warp deb 包安装"
-            cd /tmp
-            # 尝试多个版本
-            for url in \
-              "https://pkg.cloudflareclient.com/pool/jammy/main/c/cloudflare-warp/cloudflare-warp_2024.6.531.0_amd64.deb" \
-              "https://pkg.cloudflareclient.com/pool/jammy/main/c/cloudflare-warp/cloudflare-warp_2024.3.1_amd64.deb" \
-              "https://pkg.cloudflareclient.com/pool/jammy/main/c/cloudflare-warp/cloudflare-warp_2024.1.1_amd64.deb"; do
-              echo "尝试: $url"
-              if curl -fSL -o warp.deb "$url"; then
-                sudo apt-get install -y ./warp.deb || sudo dpkg -i ./warp.deb || true
-                sudo apt-get install -f -y
-                return $?
-              fi
-            done
-            return 1
-          }
-
-          # 尝试安装：先 APT，失败再 deb
-          if ! install_warp_via_apt; then
-            echo "⚠️ APT 方式失败，尝试 deb 直装"
-            install_warp_via_deb
-          fi
-
-          # 验证 warp-cli 是否可用
-          if ! command -v warp-cli >/dev/null 2>&1; then
-            echo "❌ warp-cli 安装失败，两种方式都不行"
-            exit 1
-          fi
-          echo "✅ warp-cli 已安装: $(warp-cli --version 2>&1 | head -1)"
-
-          # 注册并设置为纯代理模式（默认 40000 端口）
-          warp-cli --accept-tos registration new || true
-          warp-cli --accept-tos mode proxy || true
-          warp-cli --accept-tos connect || true
-
-          echo "⏳ 等待 WARP 隧道建立 ..."
-          IP=""
-          for i in {1..45}; do
-            IP=$(curl -s --max-time 5 -x socks5://127.0.0.1:40000 https://api.ipify.org 2>/dev/null || echo "")
-            if [ -n "$IP" ]; then
-              echo "✅ WARP ready after ${i}s, exit IP: $IP"
-              echo "WARP_IP=$IP" >> $GITHUB_ENV
-              break
-            fi
-            # 如果 30s 还没起来，重连一次
-            if [ $i -eq 30 ]; then
-              echo "⚠️ 30s 未通，尝试重连..."
-              warp-cli --accept-tos disconnect || true
-              sleep 2
-              warp-cli --accept-tos connect || true
-            fi
-            sleep 1
-          done
-
-          if [ -z "$IP" ]; then
-            echo "❌ WARP 启动失败 - 诊断信息:"
-            warp-cli --accept-tos status 2>&1 || true
-            warp-cli --accept-tos settings 2>&1 || true
-            ss -tlnp 2>/dev/null | grep 40000 || echo "端口 40000 未监听"
-            exit 1
-          fi
-
-      # =========================
-      # 🟡 2. 安装系统依赖（Xvfb + 音频解码）
-      # =========================
-      - name: 安装系统依赖
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y xvfb ffmpeg libglib2.0-0 libnss3 libnspr4 \
-                                 libdbus-1-3 libatk1.0-0 libatk-bridge2.0-0 \
-                                 libcups2 libdrm2 libxkbcommon0 libxcomposite1 \
-                                 libxdamage1 libxfixes3 libxrandr2 libgbm1 \
-                                 libpango-1.0-0 libcairo2 libasound2
-
-      # =========================
-      # 🟡 3. Python 环境
-      # =========================
-      - name: 配置 Python 环境
-        uses: actions/setup-python@v5
+      - name: 🐍 设置 Python
+        uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
-          cache: 'pip'
+          python-version: '3.10'
 
-      - name: 安装 Python 依赖包
+      - name: 📦 下载 GOST
+        run: |
+          VERSION=$(curl -s https://api.github.com/repos/ginuerzh/gost/releases/latest \
+            | grep '"tag_name"' | cut -d'"' -f4 | tr -d 'v')
+          echo "📦 GOST 版本: $VERSION"
+          wget -q "https://github.com/ginuerzh/gost/releases/download/v${VERSION}/gost_${VERSION}_linux_amd64.tar.gz"
+          tar -xzf "gost_${VERSION}_linux_amd64.tar.gz"
+          chmod +x gost
+
+      - name: 🛠️ 安装系统依赖
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y \
+            google-chrome-stable \
+            xvfb \
+            xdotool
+
+      - name: 🐍 安装 Python 依赖
         working-directory: gaming4free-renew
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          sbase install chromium
+          pip install seleniumbase
+          seleniumbase install chromedriver
 
-      # =========================
-      # 🟡 4. 运行续期脚本（账号 ${{ matrix.account }}）
-      # =========================
-      - name: 运行续期脚本 (账号 ${{ matrix.account }})
+      - name: 🚀 运行续期脚本
         env:
-          # 账号标识（用于 TG 通知区分）
-          GF_ACCOUNT_ID: ${{ matrix.account }}
-          # 账号1 用原名（不带后缀），账号2/3 用 _N 后缀
-          # matrix.account == 1 时读 MC_USERNAME，否则读 MC_USERNAME_2/3
-          MC_USERNAME:  ${{ matrix.account == 1 && secrets.MC_USERNAME || secrets[format('MC_USERNAME_{0}', matrix.account)] }}
-          MC_PASSWORD:  ${{ matrix.account == 1 && secrets.MC_PASSWORD || secrets[format('MC_PASSWORD_{0}', matrix.account)] }}
-          GF_SITE_URL:  ${{ matrix.account == 1 && secrets.GF_SITE_URL || secrets[format('GF_SITE_URL_{0}', matrix.account)] }}
-          GF_LOGIN_URL: ${{ matrix.account == 1 && secrets.GF_LOGIN_URL || secrets[format('GF_LOGIN_URL_{0}', matrix.account)] }}
-          GF_COOKIE:    ${{ matrix.account == 1 && secrets.GF_COOKIE || secrets[format('GF_COOKIE_{0}', matrix.account)] }}
-          # 通用 Secret（所有账号共用）
-          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-          TG_CHAT_ID:   ${{ secrets.TG_CHAT_ID }}
+          PYTHONIOENCODING: utf-8
+          TG_BOT: ${{ secrets.TG_BOT }}
+          GAME4FREE_ACCOUNT: ${{ secrets.GAME4FREE_ACCOUNT }}
+          GAME4FREE_PROXY: ${{ secrets.GAME4FREE_PROXY }}
         working-directory: gaming4free-renew
         run: |
-          echo "🔄 开始处理账号 ${{ matrix.account }}"
-          # 检查 Secret 是否配置
-          if [ -z "$MC_USERNAME" ]; then
-            echo "⚠️ 账号 ${{ matrix.account }} 未配置用户名 Secret，跳过"
-            exit 0
-          fi
-          if [ -z "$GF_COOKIE" ]; then
-            echo "⚠️ 账号 ${{ matrix.account }} 未配置 cookie Secret，跳过"
-            exit 0
-          fi
-          mkdir -p screenshots
-          xvfb-run -a --server-args="-screen 0 1280x800x24" python renew.py
+          xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" \
+            python renew.py
 
-      # =========================
-      # 🟡 5. 上传截图 + 日志（失败也上传）
-      # =========================
-      - name: 上传截图 (账号 ${{ matrix.account }})
-        uses: actions/upload-artifact@v4
+      - name: 📸 上传截图
         if: always()
-        with:
-          name: screenshots-account${{ matrix.account }}-${{ github.run_id }}
-          path: gaming4free-renew/screenshots/**
-          if-no-files-found: warn
-          retention-days: 7
-
-      - name: 上传日志 (账号 ${{ matrix.account }})
         uses: actions/upload-artifact@v4
-        if: always()
         with:
-          name: renew-log-account${{ matrix.account }}-${{ github.run_id }}
-          path: gaming4free-renew/renew.log
-          if-no-files-found: warn
-          retention-days: 7
+          name: debug-screenshots
+          path: gaming4free-renew/*.png
+          if-no-files-found: ignore
+          retention-days: 3
