@@ -135,7 +135,7 @@ def click_plus_90(sb):
     # 直接用 JS 找到包含 '90 min' 的元素, 然后向上找可点击的父元素
     try:
         result = sb.execute_script("""
-            return (function() {
+            (function() {
                 var allEls = document.querySelectorAll('*');
                 for (var i = 0; i < allEls.length; i++) {
                     var el = allEls[i];
