@@ -382,13 +382,10 @@ def run_script():
 
     log(f"📋 共 {len(ACCOUNTS)} 个账号")
 
-    proxy_str = LOCAL_PROXY if IS_PROXY else None
+    # WARP 是系统级代理, 不需要在 SeleniumBase 里配 proxy
+    # 浏览器会自动走 WARP 的系统网络
     sb_kwargs = {"uc": True, "test": True}
-    if proxy_str:
-        sb_kwargs["proxy"] = proxy_str
-        log(f"🔗 使用代理: {proxy_str}")
-    else:
-        log("🌐 直连模式 (无代理)")
+    log("🛡️ 使用 WARP 系统级代理 (无需配置 proxy 参数)")
 
     log("🔧 启动浏览器...")
     with SB(**sb_kwargs) as sb:

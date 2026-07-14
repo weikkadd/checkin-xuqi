@@ -53,17 +53,15 @@ jobs:
           echo "[INFO] WARP Trace:"
           curl -s --max-time 10 https://www.cloudflare.com/cdn-cgi/trace | grep -E 'ip=|warp=|loc=' || true
 
-      - name: 🚀 运行续期脚本 (WARP 代理)
+      - name: 🚀 运行续期脚本 (WARP 系统代理)
         env:
           PYTHONIOENCODING: utf-8
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           GAME4FREE_ACCOUNT: ${{ secrets.GAME4FREE_ACCOUNT }}
-          IS_PROXY: 'true'
-          PROXY_SERVER: 'socks5://127.0.0.1:40000'
         working-directory: gaming4free-renew
         run: |
-          echo "代理: WARP (socks5://127.0.0.1:40000)"
+          echo "🛡️ 使用 WARP 系统级代理"
           xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python renew.py
 
       - name: 📸 上传截图
