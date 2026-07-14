@@ -269,14 +269,39 @@ def renew_account(sb, server_name, renew_url):
     time.sleep(3)
 
     log("🔍 查找 VOTE 按钮...")
-    try:
-        sb.wait_for_element_visible('#sd-vote-btn', timeout=15)
-        sb.execute_script("document.getElementById('sd-vote-btn').scrollIntoView({block:'center'})")
-        time.sleep(0.3)
-        sb.click('#sd-vote-btn')
-        log("✅ 已点击 VOTE 按钮")
-    except Exception as e:
-        log(f"❌ VOTE 按钮未找到: {e}")
+    vote_clicked = False
+    vote_selectors = [
+        '#sd-vote-btn',
+        'button:has-text("VOTE")',
+        'button:has-text("Vote")',
+        'button:has-text("vote")',
+        'a:has-text("VOTE")',
+        'a:has-text("Vote")',
+        '[class*="vote"]',
+        '[id*="vote"]',
+    ]
+    for sel in vote_selectors:
+        try:
+            sb.wait_for_element_visible(sel, timeout=5)
+            sb.execute_script(f"document.querySelector('{sel}')?.scrollIntoView({{block:'center'}})")
+            time.sleep(0.3)
+            sb.click(sel)
+            log(f"✅ 已点击 VOTE 按钮 (选择器: {sel})")
+            vote_clicked = True
+            break
+        except:
+            continue
+
+    if not vote_clicked:
+        log("❌ VOTE 按钮未找到")
+        # 打印页面所有按钮文字, 帮助诊断
+        try:
+            btns = sb.execute_script("""
+                return Array.from(document.querySelectorAll('button, a')).map(b => b.innerText.trim()).filter(t => t.length > 0 && t.length < 50);
+            """)
+            log(f"📋 页面所有按钮: {btns}")
+        except:
+            pass
         clear_cache(sb)
         return ''
 
