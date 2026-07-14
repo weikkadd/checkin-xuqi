@@ -135,53 +135,43 @@ def click_plus_90(sb):
     # 直接用 JS 找到包含 '90 min' 的元素, 然后向上找可点击的父元素
     try:
         result = sb.execute_script("""
-            // 找到所有包含 '90 min' 的元素
-            var allEls = document.querySelectorAll('*');
-            for (var i = 0; i < allEls.length; i++) {
-                var el = allEls[i];
-                var text = (el.innerText || '').trim();
-                if (text === '+ 90 min' || text === '+90 min' || text === '+ 90 min') {
-                    // 找到了! 打印它的 outerHTML 和父元素链
-                    var info = {
-                        tag: el.tagName,
-                        text: text,
-                        html: el.outerHTML.substring(0, 200),
-                        parentTag: el.parentElement ? el.parentElement.tagName : 'none',
-                        parentClass: el.parentElement ? el.parentElement.className.substring(0, 100) : '',
-                        parentHTML: el.parentElement ? el.parentElement.outerHTML.substring(0, 300) : ''
-                    };
-
-                    // 向上找可点击的元素
-                    var clickTarget = el;
-                    for (var j = 0; j < 10; j++) {
-                        if (!clickTarget) break;
-                        var tag = clickTarget.tagName;
-                        // 检查是否有 onclick 或是 a/button/[role=button]
-                        if (tag === 'A' || tag === 'BUTTON' ||
-                            clickTarget.getAttribute('role') === 'button' ||
-                            clickTarget.onclick ||
-                            clickTarget.className.includes('btn') ||
-                            clickTarget.className.includes('click')) {
-                            clickTarget.scrollIntoView({block: 'center'});
-                            clickTarget.click();
-                            info.clicked = true;
-                            info.clickedTag = clickTarget.tagName;
-                            info.clickedClass = clickTarget.className.substring(0, 100);
-                            return info;
+            return (function() {
+                var allEls = document.querySelectorAll('*');
+                for (var i = 0; i < allEls.length; i++) {
+                    var el = allEls[i];
+                    var text = (el.innerText || '').trim();
+                    if (text === '+ 90 min' || text === '+90 min') {
+                        var info = {
+                            tag: el.tagName,
+                            parentTag: el.parentElement ? el.parentElement.tagName : 'none',
+                            parentClass: el.parentElement ? el.parentElement.className.substring(0, 100) : ''
+                        };
+                        var clickTarget = el;
+                        for (var j = 0; j < 10; j++) {
+                            if (!clickTarget) break;
+                            var tag = clickTarget.tagName;
+                            if (tag === 'A' || tag === 'BUTTON' ||
+                                clickTarget.getAttribute('role') === 'button' ||
+                                clickTarget.onclick ||
+                                (clickTarget.className && clickTarget.className.includes('btn'))) {
+                                clickTarget.scrollIntoView({block: 'center'});
+                                clickTarget.click();
+                                info.clicked = true;
+                                info.clickedTag = clickTarget.tagName;
+                                info.clickedClass = clickTarget.className.substring(0, 100);
+                                return info;
+                            }
+                            clickTarget = clickTarget.parentElement;
                         }
-                        clickTarget = clickTarget.parentElement;
+                        el.scrollIntoView({block: 'center'});
+                        el.click();
+                        info.clicked = true;
+                        info.clickedTag = el.tagName;
+                        return info;
                     }
-
-                    // 如果没找到可点击的父元素, 直接点击 span 本身
-                    el.scrollIntoView({block: 'center'});
-                    el.click();
-                    info.clicked = true;
-                    info.clickedTag = el.tagName;
-                    info.clickedClass = el.className.substring(0, 100);
-                    return info;
                 }
-            }
-            return {clicked: false};
+                return {clicked: false};
+            })();
         """)
 
         if result and result.get('clicked'):
