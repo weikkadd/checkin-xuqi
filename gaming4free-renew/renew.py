@@ -337,18 +337,25 @@ def run_script():
         for server_name, renew_url in ACCOUNTS:
             success_count = 0
             for r in range(MAX_ROUNDS):
-                log(f"\n🔄 [{server_name}] 第 {r+1} 轮尝试")
-                time_text, time_secs, success = renew_account(sb, server_name, renew_url)
+                log(f"\n🔄 [{server_name}] 第 {r+1}/{MAX_ROUNDS} 轮尝试")
+                try:
+                    time_text, time_secs, success = renew_account(sb, server_name, renew_url)
+                except Exception as e:
+                    log(f"❌ 第 {r+1} 轮异常: {e}")
+                    time_text, time_secs, success = "", 0, False
+
                 if success:
-                    # 如果已经达到上限，直接跳出
                     if time_secs + ADD_SECONDS > TARGET_SECONDS:
-                        send_tg("✅ 已达上限", server_name, time_text)
+                        send_tg("✅ 已达48h上限", server_name, time_text)
                         break
-                    send_tg("✅ 续期成功", server_name, time_text)
+                    send_tg("✅续期成功", server_name, time_text)
                     success_count += 1
-                
-                log(f"⏳ 等待 {COOLDOWN_SEC} 秒冷却...")
-                time.sleep(COOLDOWN_SEC)
+                else:
+                    log(f"⚠️ 第 {r+1} 轮未成功, 继续重试")
+
+                if r < MAX_ROUNDS - 1:
+                    log(f"⏳ 等待 {COOLDOWN_SEC} 秒冷却...")
+                    time.sleep(COOLDOWN_SEC)
 
 if __name__ == "__main__":
     run_script()
