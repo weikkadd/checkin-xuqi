@@ -1,4 +1,4 @@
-# Checkin  🎮
+# 自动续期合集  🎮
 
 多个免费 Minecraft / VPS 面板的 GitHub Actions 自动续期合集。
 
