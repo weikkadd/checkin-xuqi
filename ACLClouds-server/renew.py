@@ -202,12 +202,30 @@ def process_account(label, cookie_str):
     try:
         servers = list_servers(session)
     except Exception as e:
+        # 失败时打印响应内容方便排查
+        try:
+            r = api_get(session, "/api/client")
+            log(f"🐛 /api/client 响应 HTTP {r.status_code}: {r.text[:500]}")
+        except Exception as e2:
+            log(f"🐛 二次请求失败: {e2}")
         return {"label": label, "ok": False, "msg": f"获取服务器列表失败: {e}"}
 
     if not servers:
+        # 列表为空时打印原始响应帮助排查
+        try:
+            r = api_get(session, "/api/client")
+            log(f"🐛 /api/client 原始响应 HTTP {r.status_code}: {r.text[:500]}")
+        except Exception:
+            pass
         return {"label": label, "ok": True, "msg": "没有服务器", "results": []}
 
     log(f"📦 共 {len(servers)} 台服务器")
+    # 调试: 打印第一台服务器的原始数据结构
+    if servers:
+        first = servers[0]
+        if isinstance(first, dict):
+            attrs = first.get("attributes", first)
+            log(f"🐛 首个服务器字段: {list(attrs.keys()) if isinstance(attrs, dict) else type(attrs).__name__}")
     now = datetime.now(timezone.utc)
     results = []
     renewed = 0
@@ -216,7 +234,7 @@ def process_account(label, cookie_str):
 
     for idx, srv in enumerate(servers, 1):
         attrs = srv.get("attributes", srv) if isinstance(srv, dict) else {}
-        sid = attrs.get("identifier") or attrs.get("id") or attrs.get("uuid")
+        sid = attrs.get("identifier") or attrs.get("id") or attrs.get("uuid") or attrs.get("uuid_short") or attrs.get("server_id")
         name = attrs.get("name", f"server-{idx}")
         stype = attrs.get("egg") or attrs.get("egg_id") or attrs.get("server_type") or "unknown"
 
