@@ -27,8 +27,10 @@ for line in raw_accounts:
 
 TARGET_SECONDS = 48 * 3600
 ADD_SECONDS = 90 * 60
-COOLDOWN_SEC = 300
-MAX_ROUNDS = 10
+# 修复 #5: 原值 MAX_ROUNDS=10 + COOLDOWN=300s 单账号约 50 分钟, 超过 Actions 30 分钟限制
+# 改为 5 轮 × 120s ≈ 10 分钟, 配合 timeout 60 分钟可稳定跑完
+COOLDOWN_SEC = 120
+MAX_ROUNDS = 5
 SCREENSHOT_DIR = "/tmp/g4f-debug"
 
 # ================== 工具函数 ==================
@@ -144,6 +146,39 @@ def close_modals(sb):
             except: continue
     except: pass
 
+def clear_overlays(sb):
+    """点击前移除可能遮挡按钮的 modal/overlay 残留 (修复 #6)
+
+    上一轮失败后页面常残留半透明遮罩/backdrop, 导致真实点击落在遮罩上而非按钮。
+    这里只移除明确的遮罩层, 不碰功能元素。
+    """
+    try:
+        removed = sb.execute_script("""
+        (function() {
+            var n = 0;
+            // Tailwind/Livewire 常见遮罩: modal backdrop, fixed 全屏遮罩
+            document.querySelectorAll(
+                '.modal-backdrop, .modal.show, [x-show="true"][x-transition], ' +
+                '.fixed.inset-0.bg-black, .v-overlay, .modal-open'
+            ).forEach(function(el){
+                // 只删确实是遮罩的 (无文字内容 或 全屏 fixed)
+                var txt = (el.innerText || '').trim();
+                var rect = el.getBoundingClientRect();
+                if (txt.length === 0 || (rect.width > window.innerWidth * 0.8
+                    && rect.height > window.innerHeight * 0.8)) {
+                    el.remove();
+                    n++;
+                }
+            });
+            return n;
+        })();
+        """)
+        if removed:
+            log(f"🧹 清除 {removed} 个遮罩残留")
+            time.sleep(0.5)
+    except Exception:
+        pass
+
 def check_button_cooldown(sb):
     """检查 +90 按钮是否处于冷却"""
     cooldown_check = """
@@ -207,9 +242,49 @@ def handle_turnstile(sb, max_retries=3):
         time.sleep(2)
     return False
 
+def dump_buttons(sb):
+    """调试: 打印页面上所有含 '90' 的按钮的 outerHTML 和 wire:click 属性"""
+    try:
+        info = sb.execute_script("""
+        (function() {
+            var out = [];
+            var all = document.querySelectorAll('button, [role="button"], a');
+            for (var i = 0; i < all.length; i++) {
+                var el = all[i];
+                var t = (el.innerText || el.textContent || "").replace(/\\s+/g, ' ').trim();
+                if (t.indexOf('90') !== -1 || /90/.test(el.getAttribute('wire:click') || '')) {
+                    out.push({
+                        tag: el.tagName.toLowerCase(),
+                        text: t.substring(0, 40),
+                        wc: el.getAttribute('wire:click') || '',
+                        disabled: el.disabled || (el.getAttribute('aria-disabled') === 'true'),
+                        html: el.outerHTML.substring(0, 160)
+                    });
+                }
+            }
+            return out;
+        })();
+        """)
+        if info:
+            log(f"🔎 [调试] 含 90 的按钮共 {len(info)} 个:")
+            for b in info:
+                log(f"    <{b.get('tag')}> wc='{b.get('wc')}' disabled={b.get('disabled')} text='{b.get('text')}'")
+        else:
+            log("🔎 [调试] 未找到任何含 90 的按钮")
+        return info or []
+    except Exception as e:
+        log(f"⚠️ dump_buttons 异常: {e}")
+        return []
+
+
 def click_plus_90(sb):
-    """点击 +90 min 按钮 — JS dispatchEvent 优先 (v3.1 验证可用)"""
+    """点击 +90 min 按钮 — 优先按 wire:click 属性定位 (不依赖文字子串)"""
     close_modals(sb)
+    # 每轮点击前清理可能遮挡的 modal/overlay 残留 (修复 #6)
+    clear_overlays(sb)
+
+    # 调试: 先 dump 出真实按钮结构 (修复 #1)
+    btn_info = dump_buttons(sb)
 
     # 检查 cooldown
     btn_status = check_button_cooldown(sb)
@@ -217,137 +292,128 @@ def click_plus_90(sb):
         remaining = btn_status.get('remaining', '?')
         log(f"⏳ 按钮冷却中: {btn_status.get('text','')} (剩余 {remaining}s)")
         return False
-
     if btn_status:
         log(f"📋 按钮状态: {btn_status.get('text','')}")
 
-    # 1. ★ 优先: 原生 element.click() + WebDriver click 双重保险
-    #    Livewire 3 / Filament 会检查 event.isTrusted
-    #    - dispatchEvent(new MouseEvent) → isTrusted=false → 被忽略
-    #    - element.click() → isTrusted=true → Livewire 接收
-    #    所以必须用 el.click() 原生方法, 而非 dispatchEvent
-    log("🚀 尝试原生 click() + dispatchEvent 组合点击...")
-    js_real_click = """
-    (function() {
-        var targets = ["+ 90 min", "+90 min", "90 min"];
-        var all = document.querySelectorAll('button, [role="button"], a, span');
-        for (var i = 0; i < all.length; i++) {
-            var el = all[i];
-            var text = (el.innerText || el.textContent || "").trim();
-            if (text.length > 30) continue;
-            for (var j = 0; j < targets.length; j++) {
-                if (text.indexOf(targets[j]) !== -1 && !el.disabled) {
-                    el.scrollIntoView({block: 'center', behavior: 'instant'});
-                    try { el.focus({preventScroll: false}); } catch(e) {}
-                    var rect = el.getBoundingClientRect();
-                    var x = rect.left + rect.width / 2;
-                    var y = rect.top + rect.height / 2;
-                    var opts = {bubbles: true, cancelable: true, view: window, clientX: x, clientY: y};
-                    // 先派发 mousedown/mouseup (合成, isTrusted=false, 但有些监听器需要)
-                    el.dispatchEvent(new MouseEvent('mousedown', opts));
-                    el.dispatchEvent(new MouseEvent('mouseup', opts));
-                    // ★ 关键: 用原生 click() 方法, 触发 isTrusted=true 的 click 事件
-                    try { el.click(); } catch(e) {}
-                    // 同时再 dispatchEvent 一次兜底
-                    el.dispatchEvent(new MouseEvent('click', opts));
-                    // 如果文字在 span/strong 里, 也点父元素 button
-                    if (el.tagName === 'SPAN' || el.tagName === 'STRONG') {
-                        var p = el.parentElement;
-                        if (p) {
-                            try { p.click(); } catch(e) {}
-                            p.dispatchEvent(new MouseEvent('click', opts));
-                        }
+    clicked = False
+
+    # 1. ★ 优先: 按 wire:click 属性精确定位 (修复 #1 核心)
+    #    不再依赖文字子串 "90 min" (会被 span/strong 碎片/换行/图标打断)
+    if not clicked:
+        try:
+            result = sb.execute_script("""
+            (function() {
+                var cands = document.querySelectorAll('[wire\\\\:click]');
+                for (var i = 0; i < cands.length; i++) {
+                    var wc = cands[i].getAttribute('wire:click') || '';
+                    if (/90/.test(wc) && !cands[i].disabled
+                        && cands[i].getAttribute('aria-disabled') !== 'true') {
+                        cands[i].scrollIntoView({block: 'center', behavior: 'instant'});
+                        try { cands[i].focus(); } catch(e) {}
+                        try { cands[i].click(); } catch(e) {}
+                        return 'wc-clicked: ' + wc + ' on <' + cands[i].tagName.toLowerCase() + '>';
                     }
-                    return 'clicked:' + text + ' on <' + el.tagName.toLowerCase() + '>';
                 }
-            }
-        }
-        return false;
-    })();
-    """
-    try:
-        result = sb.execute_script(js_real_click)
-        if result:
-            log(f"🚀 原生 click(): {result}")
-            screenshot(sb, "after-js-click")
-            time.sleep(2)
-            # 检查是否出现 Turnstile
-            handle_turnstile(sb)
-            time.sleep(5)  # 给 Livewire 请求时间
-            # ★ 关键: 再用 WebDriver 真实点击一次 (双保险, isTrusted=true)
+                return false;
+            })();
+            """)
+            if result:
+                log(f"🎯 [策略1] wire:click 定位点击: {result}")
+                clicked = True
+        except Exception as e:
+            log(f"⚠️ [策略1] wire:click 点击异常: {e}")
+
+    # 2. 备用: 含 90 的可点击元素, 用原生 element.click() (isTrusted=true)
+    if not clicked:
+        try:
+            result = sb.execute_script("""
+            (function() {
+                var all = document.querySelectorAll('button, [role="button"], a');
+                for (var i = 0; i < all.length; i++) {
+                    var el = all[i];
+                    var t = (el.innerText || el.textContent || "").replace(/\\s+/g, ' ').trim();
+                    // 宽松匹配: 文字里含 90, 且文本短, 且未禁用
+                    if (t.length <= 30 && /90/.test(t) && !el.disabled
+                        && el.getAttribute('aria-disabled') !== 'true') {
+                        el.scrollIntoView({block: 'center', behavior: 'instant'});
+                        try { el.focus(); } catch(e) {}
+                        try { el.click(); } catch(e) {}
+                        return 'text-clicked: ' + t + ' on <' + el.tagName.toLowerCase() + '>';
+                    }
+                }
+                return false;
+            })();
+            """)
+            if result:
+                log(f"🚀 [策略2] 含90元素原生 click(): {result}")
+                clicked = True
+        except Exception as e:
+            log(f"⚠️ [策略2] 异常: {e}")
+
+    # 3. 检查广告按钮 (Watch Ad 等) — 广告流程可能在前置
+    if not clicked:
+        log("🔍 [策略3] 检查广告按钮...")
+        ad_keywords = ['Watch Ad', 'Play Ad', 'Claim Reward', 'Get Free Time', 'Earn Time']
+        for kw in ad_keywords:
             try:
-                xpath = "//button[contains(., '90 min') and not(contains(., 'Wait'))]"
+                ad_result = sb.execute_script(
+                    '(function() { var btns = document.querySelectorAll("button, a, [role=\\"button\\"]"); '
+                    'for (var i = 0; i < btns.length; i++) { var t = (btns[i].innerText || "").trim(); '
+                    'if (t.toLowerCase().indexOf("' + kw.lower() + '") !== -1 && t.length < 30) { '
+                    'btns[i].scrollIntoView({block: "center"}); try{btns[i].click();}catch(e){} return "ad:" + t; } } '
+                    'return false; })();'
+                )
+                if ad_result:
+                    log(f"🎬 [策略3] 广告按钮: {ad_result}")
+                    time.sleep(15)
+                    # 广告后再找含 90 的按钮
+                    result2 = sb.execute_script(
+                        '(function() { var btns = document.querySelectorAll("button, [role=\\"button\\"]"); '
+                        'for (var i = 0; i < btns.length; i++) { var t = (btns[i].innerText||"").replace(/\\s+/g," ").trim(); '
+                        'if (/90/.test(t) && t.length < 30 && !btns[i].disabled) { '
+                        'btns[i].scrollIntoView({block:"center"}); try{btns[i].click();}catch(e){} return "clicked:"+t; } } '
+                        'return false; })();'
+                    )
+                    if result2:
+                        log(f"🚀 [策略3] 广告后点击 +90: {result2}")
+                        clicked = True
+                        break
+            except:
+                continue
+
+    # 4. 最后兜底: SeleniumBase WebDriver 真实点击 (isTrusted=true)
+    #    注意: 不用 contains(@wire:click,...) — XPath 1.0 会把 'wire:' 当命名空间前缀报错
+    #    wire:click 场景已由策略1的 CSS 选择器覆盖
+    if not clicked:
+        xpaths = [
+            "//button[contains(., '90 min') and not(contains(., 'Wait'))]",
+            "//button[contains(., '+ 90') and not(contains(., 'Wait'))]",
+            "//*[contains(text(), '90')]/ancestor::button[not(contains(., 'Wait'))]",
+        ]
+        for xpath in xpaths:
+            try:
                 if sb.is_element_visible(xpath):
                     sb.scroll_to(xpath)
-                    time.sleep(0.3)
+                    time.sleep(0.5)
+                    screenshot(sb, "before-click")
                     sb.click(xpath)
-                    log(f"🚀 WebDriver 二次点击: {xpath}")
-                    time.sleep(3)
-                    handle_turnstile(sb)
-                    time.sleep(5)
-            except Exception as e:
-                log(f"⚠️ WebDriver 二次点击失败 (可忽略): {e}")
-            return True
-    except Exception as e:
-        log(f"⚠️ JS 点击异常: {e}")
+                    log(f"✅ [策略4] WebDriver 兜底点击: {xpath}")
+                    clicked = True
+                    break
+            except:
+                continue
 
-    # 2. 备用: 检查广告按钮 (Watch Ad 等)
-    log("🔍 检查广告按钮...")
-    ad_keywords = ['Watch Ad', 'Play Ad', 'Claim Reward', 'Get Free Time', 'Earn Time']
-    for kw in ad_keywords:
-        try:
-            ad_script = (
-                '(function() { var btns = document.querySelectorAll("button, a, [role=\\"button\\"]"); '
-                'for (var i = 0; i < btns.length; i++) { var t = (btns[i].innerText || "").trim(); '
-                'if (t.toLowerCase().indexOf("' + kw.lower() + '") !== -1 && t.length < 30) { '
-                'btns[i].scrollIntoView({block: "center"}); btns[i].click(); return "ad:" + t; } } '
-                'return false; })();'
-            )
-            ad_result = sb.execute_script(ad_script)
-            if ad_result:
-                log(f"🎬 广告按钮: {ad_result}")
-                time.sleep(15)
-                result2 = sb.execute_script(
-                    '(function() { var btns = document.querySelectorAll("button"); '
-                    'for (var i = 0; i < btns.length; i++) { var t = btns[i].innerText||""; '
-                    'if (t.indexOf("90") !== -1) { btns[i].scrollIntoView({block:"center"}); '
-                    'btns[i].click(); return "clicked:"+t.trim(); } } return false; })();'
-                )
-                if result2:
-                    log(f"🚀 广告后点击 +90: {result2}")
-                    time.sleep(2)
-                    handle_turnstile(sb)
-                    time.sleep(3)
-                    return True
-        except:
-            continue
+    if not clicked:
+        log("❌ 所有点击策略失败")
+        screenshot(sb, "click-fail")
+        return False
 
-    # 3. 最后兜底: SeleniumBase 原生点击
-    xpaths = [
-        "//button[contains(text(), '+ 90 min')]",
-        "//button[contains(., '+90 min')]",
-        "//*[contains(text(), '+ 90 min')]/ancestor::button",
-        "//button[contains(., '90 min')]",
-    ]
-    for xpath in xpaths:
-        try:
-            if sb.is_element_visible(xpath):
-                sb.scroll_to(xpath)
-                time.sleep(0.5)
-                screenshot(sb, "before-click")
-                sb.click(xpath)
-                log(f"✅ 兜底点击: {xpath}")
-                time.sleep(2)
-                handle_turnstile(sb)
-                time.sleep(5)
-                screenshot(sb, "after-click")
-                return True
-        except:
-            continue
-
-    log("❌ 所有点击策略失败")
-    screenshot(sb, "click-fail")
-    return False
+    # 点击后统一处理 Turnstile
+    time.sleep(2)
+    screenshot(sb, "after-click")
+    handle_turnstile(sb)
+    time.sleep(5)
+    return True
 
 def handle_confirm(sb):
     """处理确认按钮"""
@@ -378,7 +444,8 @@ def renew_account(sb, server_name, renew_url):
     console_url = f"https://control.gaming4free.net/server/{slug}/console"
     log(f"🔗 打开: {console_url}")
 
-    sb.uc_open_with_reconnect(console_url, reconnect_time=6)
+    # 修复 #4: reconnect 调大, 代理慢/Cloudflare 挑战时 6s 不够
+    sb.uc_open_with_reconnect(console_url, reconnect_time=10)
     time.sleep(5)
 
     time_text, time_secs = get_remaining_time(sb)
@@ -395,27 +462,39 @@ def renew_account(sb, server_name, renew_url):
         log(f"📋 按钮信息: {btn_status.get('text','')} | cooldown={btn_status.get('cooldown')}")
 
     log("🔍 查找 +90 min 按钮...")
-    # 监听网络请求, 确认点击是否真的发了 Livewire 请求
-    livewire_requests = []
+    # 监听网络请求: 记录点击后所有 XHR/fetch (修复 #2)
+    # 不再只认 URL 含 'livewire' 的请求 — 站点可能用 /api/ 或其他端点
     try:
-        sb.driver.execute_cdp_cmd("Network.enable", {})
         sb.driver.execute_script("""
             (function() {
-                window.__lw_requests = [];
+                window.__reqs = [];
+                var isPost = function(method){ return (method||'').toUpperCase() === 'POST'; };
+                var record = function(method, url, bodyHint) {
+                    if (!url) return;
+                    // 只记录 POST (续期是写操作) + 任何可疑端点, 过滤静态资源/轮询
+                    if (/\\.(js|css|png|jpg|jpeg|gif|svg|woff|ico)(\\?|$)/i.test(url)) return;
+                    if (/ipify|cloudflare|turnstile|recaptcha/i.test(url)) return;
+                    window.__reqs.push({m: (method||'').toUpperCase(), u: String(url).substring(0, 120), b: bodyHint || ''});
+                };
                 var origFetch = window.fetch;
                 window.fetch = function() {
-                    var url = arguments[0];
-                    if (typeof url === 'string' && url.indexOf('livewire') !== -1) {
-                        window.__lw_requests.push(url);
-                    }
+                    var url = arguments[0], opt = arguments[1] || {};
+                    try { record(opt.method || 'GET', (typeof url === 'string') ? url : (url && url.url), ''); } catch(e) {}
                     return origFetch.apply(this, arguments);
                 };
-                var origXHR = XMLHttpRequest.prototype.open;
+                var origOpen = XMLHttpRequest.prototype.open;
+                var origSend = XMLHttpRequest.prototype.send;
                 XMLHttpRequest.prototype.open = function(method, url) {
-                    if (url && url.indexOf('livewire') !== -1) {
-                        window.__lw_requests.push(method + ' ' + url);
-                    }
-                    return origXHR.apply(this, arguments);
+                    this.__m = method; this.__u = url;
+                    return origOpen.apply(this, arguments);
+                };
+                XMLHttpRequest.prototype.send = function(body) {
+                    try {
+                        var hint = '';
+                        if (body && typeof body === 'string' && body.length < 200) hint = body.substring(0, 80);
+                        record(this.__m, this.__u, hint);
+                    } catch(e) {}
+                    return origSend.apply(this, arguments);
                 };
             })();
         """)
@@ -426,15 +505,27 @@ def renew_account(sb, server_name, renew_url):
         screenshot(sb, f"fail_{server_name}")
         return time_text, time_secs, False
 
-    # 检查是否真的发起了 Livewire 请求
-    time.sleep(2)
+    # 检查点击后是否真的发出请求 (修复 #2: 看 POST / 含 livewire|api|update 的)
+    time.sleep(3)
     try:
-        lw_reqs = sb.execute_script("(function() { return window.__lw_requests || []; })();") or []
-        if lw_reqs:
-            log(f"🌐 检测到 {len(lw_reqs)} 个 Livewire 请求: {lw_reqs[0]}")
+        reqs = sb.execute_script("(function() { return window.__reqs || []; })();") or []
+        # 优先找 POST 且端点可疑的 (续期写操作)
+        renew_re = re.compile(r'livewire|api|update|renew|time|add', re.I)
+        renew_candidates = [r for r in reqs
+                            if r.get('m') == 'POST'
+                            and renew_re.search((r.get('u','') + ' ' + r.get('b','')))]
+        if reqs:
+            log(f"🌐 点击后共 {len(reqs)} 个请求, 其中 POST {len([r for r in reqs if r.get('m')=='POST'])} 个")
+            # 调试: 打印所有 POST 帮助定位真实端点
+            for r in reqs:
+                if r.get('m') == 'POST':
+                    log(f"    📤 POST {r.get('u')}  body={r.get('b')!r}")
+        if renew_candidates:
+            log(f"✅ 疑似续期请求: {renew_candidates[0].get('m')} {renew_candidates[0].get('u')}")
         else:
-            log(f"⚠️ 未检测到 Livewire 请求, 点击可能未生效")
-    except: pass
+            log(f"⚠️ 未检测到续期类请求, 点击可能未生效 (检查上面 POST 列表确认真实端点)")
+    except Exception as e:
+        log(f"⚠️ 请求检查异常: {e}")
 
     # 处理确认/验证
     handle_confirm(sb)
@@ -444,15 +535,42 @@ def renew_account(sb, server_name, renew_url):
     handle_turnstile(sb)
     time.sleep(3)
 
-    # 重新加载页面读取时间
+    # 重新加载页面读取时间 (修复 #4: reconnect 调大 + 主动等计时器元素)
     try:
-        sb.uc_open_with_reconnect(console_url, reconnect_time=6)
-        time.sleep(3)
+        sb.uc_open_with_reconnect(console_url, reconnect_time=10)
     except Exception as e:
         log(f"⚠️ 重新加载超时: {e}")
         time.sleep(5)
 
+    # 修复 #4: 不要只 sleep 固定秒数, 主动等计时器元素出现 (最多 15s)
+    timer_sels = ['[class*="timer"]', '[class*="remaining"]', '[class*="countdown"]', '#sd-timer']
+    timer_ready = False
+    for _ in range(15):
+        for sel in timer_sels:
+            try:
+                txt = sb.execute_script(
+                    "(function(){var el=document.querySelector('" + sel + "');"
+                    "return el ? (el.textContent||'').trim() : '';})();"
+                )
+                if txt and len(txt) < 30 and parse_countdown_seconds(txt) > 0:
+                    timer_ready = True
+                    break
+            except Exception:
+                pass
+        if timer_ready:
+            break
+        time.sleep(1)
+    if not timer_ready:
+        log("⚠️ 重载后计时器未就绪 (页面可能仍在加载/挑战)")
+
     new_text, new_secs = get_remaining_time(sb)
+
+    # 修复 #3: 读不到时间时不要拿 0 去算 diff (那是假"时间异常减少")
+    if not new_text:
+        log(f"⚠️ 重载后读不到剩余时间文本 (旧={time_text}), 本轮判失败, 不误报")
+        screenshot(sb, f"no-time-{server_name}")
+        return time_text, time_secs, False
+
     time_diff = new_secs - time_secs
 
     if time_diff > 60:
@@ -473,6 +591,7 @@ def renew_account(sb, server_name, renew_url):
         return time_text, time_secs, False
     else:
         log(f"⚠️ 时间异常减少 ({time_text} → {new_text}, 差 {time_diff}s)")
+        screenshot(sb, f"time-drop-{server_name}")
         return time_text, time_secs, False
 
 def run_script():
