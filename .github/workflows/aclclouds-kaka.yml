@@ -31,4 +31,4 @@ jobs:
           KAKA_GOOGLE_PASSWORD: ${{ secrets.KAKA_GOOGLE_PASSWORD }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-        run: python aclclouds-kaka-renew/renew.py
+        run: python ACLClouds-server/renew.py
