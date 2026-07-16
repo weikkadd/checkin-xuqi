@@ -221,14 +221,16 @@ def click_plus_90(sb):
     if btn_status:
         log(f"📋 按钮状态: {btn_status.get('text','')}")
 
-    # 1. ★ 优先: JS dispatchEvent 模拟完整鼠标事件序列
-    #    这是 v3.1 验证可用的方案, 能触发 livewire/wire:click 等 Alpine.js 监听器
-    #    SeleniumBase 原生 click 只触发 click 事件, 不触发 mousedown/mouseup, 经常无效
-    log("🚀 尝试 JS dispatchEvent 点击...")
+    # 1. ★ 优先: 原生 element.click() + WebDriver click 双重保险
+    #    Livewire 3 / Filament 会检查 event.isTrusted
+    #    - dispatchEvent(new MouseEvent) → isTrusted=false → 被忽略
+    #    - element.click() → isTrusted=true → Livewire 接收
+    #    所以必须用 el.click() 原生方法, 而非 dispatchEvent
+    log("🚀 尝试原生 click() + dispatchEvent 组合点击...")
     js_real_click = """
     (function() {
         var targets = ["+ 90 min", "+90 min", "90 min"];
-        var all = document.querySelectorAll('button, [role="button"], a');
+        var all = document.querySelectorAll('button, [role="button"], a, span');
         for (var i = 0; i < all.length; i++) {
             var el = all[i];
             var text = (el.innerText || el.textContent || "").trim();
@@ -241,19 +243,22 @@ def click_plus_90(sb):
                     var x = rect.left + rect.width / 2;
                     var y = rect.top + rect.height / 2;
                     var opts = {bubbles: true, cancelable: true, view: window, clientX: x, clientY: y};
+                    // 先派发 mousedown/mouseup (合成, isTrusted=false, 但有些监听器需要)
                     el.dispatchEvent(new MouseEvent('mousedown', opts));
                     el.dispatchEvent(new MouseEvent('mouseup', opts));
+                    // ★ 关键: 用原生 click() 方法, 触发 isTrusted=true 的 click 事件
+                    try { el.click(); } catch(e) {}
+                    // 同时再 dispatchEvent 一次兜底
                     el.dispatchEvent(new MouseEvent('click', opts));
-                    // 如果是 span/strong 包裹, 也点父元素
+                    // 如果文字在 span/strong 里, 也点父元素 button
                     if (el.tagName === 'SPAN' || el.tagName === 'STRONG') {
                         var p = el.parentElement;
                         if (p) {
-                            p.dispatchEvent(new MouseEvent('mousedown', opts));
-                            p.dispatchEvent(new MouseEvent('mouseup', opts));
+                            try { p.click(); } catch(e) {}
                             p.dispatchEvent(new MouseEvent('click', opts));
                         }
                     }
-                    return 'clicked:' + text;
+                    return 'clicked:' + text + ' on <' + el.tagName.toLowerCase() + '>';
                 }
             }
         }
@@ -263,11 +268,25 @@ def click_plus_90(sb):
     try:
         result = sb.execute_script(js_real_click)
         if result:
-            log(f"🚀 JS dispatchEvent 点击: {result}")
+            log(f"🚀 原生 click(): {result}")
             screenshot(sb, "after-js-click")
-            time.sleep(3)
+            time.sleep(2)
+            # 检查是否出现 Turnstile
             handle_turnstile(sb)
-            time.sleep(5)  # 给 livewire 请求时间
+            time.sleep(5)  # 给 Livewire 请求时间
+            # ★ 关键: 再用 WebDriver 真实点击一次 (双保险, isTrusted=true)
+            try:
+                xpath = "//button[contains(., '90 min') and not(contains(., 'Wait'))]"
+                if sb.is_element_visible(xpath):
+                    sb.scroll_to(xpath)
+                    time.sleep(0.3)
+                    sb.click(xpath)
+                    log(f"🚀 WebDriver 二次点击: {xpath}")
+                    time.sleep(3)
+                    handle_turnstile(sb)
+                    time.sleep(5)
+            except Exception as e:
+                log(f"⚠️ WebDriver 二次点击失败 (可忽略): {e}")
             return True
     except Exception as e:
         log(f"⚠️ JS 点击异常: {e}")
@@ -376,9 +395,46 @@ def renew_account(sb, server_name, renew_url):
         log(f"📋 按钮信息: {btn_status.get('text','')} | cooldown={btn_status.get('cooldown')}")
 
     log("🔍 查找 +90 min 按钮...")
+    # 监听网络请求, 确认点击是否真的发了 Livewire 请求
+    livewire_requests = []
+    try:
+        sb.driver.execute_cdp_cmd("Network.enable", {})
+        sb.driver.execute_script("""
+            (function() {
+                window.__lw_requests = [];
+                var origFetch = window.fetch;
+                window.fetch = function() {
+                    var url = arguments[0];
+                    if (typeof url === 'string' && url.indexOf('livewire') !== -1) {
+                        window.__lw_requests.push(url);
+                    }
+                    return origFetch.apply(this, arguments);
+                };
+                var origXHR = XMLHttpRequest.prototype.open;
+                XMLHttpRequest.prototype.open = function(method, url) {
+                    if (url && url.indexOf('livewire') !== -1) {
+                        window.__lw_requests.push(method + ' ' + url);
+                    }
+                    return origXHR.apply(this, arguments);
+                };
+            })();
+        """)
+    except Exception as e:
+        log(f"⚠️ 网络监听设置失败 (可忽略): {e}")
+
     if not click_plus_90(sb):
         screenshot(sb, f"fail_{server_name}")
         return time_text, time_secs, False
+
+    # 检查是否真的发起了 Livewire 请求
+    time.sleep(2)
+    try:
+        lw_reqs = sb.execute_script("(function() { return window.__lw_requests || []; })();") or []
+        if lw_reqs:
+            log(f"🌐 检测到 {len(lw_reqs)} 个 Livewire 请求: {lw_reqs[0]}")
+        else:
+            log(f"⚠️ 未检测到 Livewire 请求, 点击可能未生效")
+    except: pass
 
     # 处理确认/验证
     handle_confirm(sb)
