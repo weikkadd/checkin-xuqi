@@ -30,7 +30,7 @@ host2play-renew/
 
 | Secret 名 | 必填 | 说明 |
 |---|---|---|
-| `H2P_RENEW_URL` | ✅ | 续期页面 URL，如 `https://host2play.gratis/server/renew?i=xxx``https://host2play.gratis/server/renew?i=xxx` |
+| `H2P_RENEW_URL` | ✅ | 续期页面 URL，如 `https://host2play.gratis/server/renew?i=xxx` |
 | `H2P_COOKIE` | ✅ | host2play 的 cookie 字符串 |
 | `TG_BOT_TOKEN` | ❌ | Telegram Bot Token（要通知才填） |
 | `TG_CHAT_ID` | ❌ | Telegram Chat ID |
