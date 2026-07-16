@@ -1,15 +1,11 @@
 #!/usr/bin/env python3
 """
-gaming4free 自动续期脚本 v5
-- 核心: 识别并走完「看广告得时长」流程
-- 核心: 按 Livewire 方法名识别真实续期调用
-- 修复: 点击后不再立刻重载页面 (会打断广告流程); 不再乱点 Confirm/OK
-- 修复: 「时间异常减少」误报
-- 增加: Alpine 组件状态实时观测 + 完整按钮 HTML dump + 广告元素检测
-- 保留: uc_click 真实点击 / Turnstile 处理 / fetch+XHR 请求监听
-- 更新: 实现方案 A — 点击前轮询等待按钮文本变为 "watch ad · +90 min"
+gaming4free 自动续期脚本 v5 (修复版)
+- 修复: headless=False 配合 xvfb-run, 解决 uc_gui_click_captcha 崩溃
+- 修复: 增加 Chrome CI 稳定性参数 (--no-sandbox, --disable-dev-shm-usage)
+- 修复: 截图路径改为工作区相对路径, 与 Actions 上传路径一致
+- 修复: 增加浏览器崩溃检测和重试机制
 """
-
 import os, time, random, urllib.request, urllib.parse, re
 import datetime
 import traceback
@@ -17,12 +13,11 @@ from seleniumbase import SB
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
 
 TG_CHAT_ID = os.environ.get("TG_CHAT_ID", "").strip()
-TG_TOKEN   = os.environ.get("TG_BOT_TOKEN", "").strip()
-GF_COOKIE  = os.environ.get("GAME4FREE_COOKIE", "").strip()
-
+TG_TOKEN = os.environ.get("TG_BOT_TOKEN", "").strip()
+GF_COOKIE = os.environ.get("GAME4FREE_COOKIE", "").strip()
 raw_accounts = os.environ.get("GAME4FREE_ACCOUNT", "").strip().splitlines()
 ACCOUNTS = []
 for line in raw_accounts:
@@ -36,7 +31,9 @@ ADD_SECONDS = 90 * 60
 COOLDOWN_SEC = 120
 MAX_ROUNDS = 5
 AD_WAIT_SEC = 100
-SCREENSHOT_DIR = "/tmp/g4f-debug"
+
+# 【修复】截图目录改为工作区相对路径, 与 Actions upload 路径一致
+SCREENSHOT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_output")
 
 def now_str():
     return datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -47,7 +44,7 @@ def log(msg):
 def screenshot(sb, name):
     try:
         os.makedirs(SCREENSHOT_DIR, exist_ok=True)
-        sb.save_screenshot(f"{SCREENSHOT_DIR}/{name}.png")
+        sb.save_screenshot(os.path.join(SCREENSHOT_DIR, f"{name}.png"))
         log(f"📸 截图已保存至 {SCREENSHOT_DIR}/{name}.png")
     except Exception as e:
         log(f"⚠️ 截图失败: {e}")
@@ -117,7 +114,7 @@ def check_button_cooldown(sb):
                 var disabled = btns[i].disabled || btns[i].getAttribute('aria-disabled') === 'true';
                 var classes = btns[i].className || '';
                 var isCooldown = classes.indexOf('disabled') !== -1 || classes.indexOf('cursor-not-allowed') !== -1 || disabled;
-                var waitMatch = text.match(/Wait\\s*(\\d+)/i) || text.match(/(\\d+)\\s*s/);
+                var waitMatch = text.match(/Wait\s*(\d+)/i) || text.match(/(\d+)\s*s/);
                 if (waitMatch) return {cooldown: true, remaining: parseInt(waitMatch[1]), text: text.trim()};
                 if (isCooldown) return {cooldown: true, disabled: true, text: text.trim()};
                 return {cooldown: false, text: text.trim()};
@@ -139,6 +136,9 @@ def handle_turnstile(sb, max_retries=3):
                     sb.uc_gui_click_captcha(); log("✅ uc_gui_click_captcha 已执行"); time.sleep(5); return True
                 except Exception as e:
                     log(f"⚠️ uc_gui_click_captcha 失败: {e}")
+            else:
+                # 没有检测到 Turnstile, 直接返回
+                return False
         except Exception as e: log(f"⚠️ Turnstile 处理异常: {e}")
         time.sleep(2)
     return False
@@ -160,7 +160,7 @@ def read_alpine_state(sb):
             st.hasAlpine = true;
             for (var k in d) {
                 try { var v = d[k]; var tv = typeof v;
-                    if ((tv === 'boolean' || tv === 'number' || tv === 'string') && ('' + v).length < 60) st[k] = v;
+                if ((tv === 'boolean' || tv === 'number' || tv === 'string') && ('' + v).length < 60) st[k] = v;
                 } catch(e) {}
             }
         }
@@ -203,10 +203,8 @@ def wait_ad_flow(sb, before_secs, max_wait=AD_WAIT_SEC):
     clicked_again = False
     alpine_logged = 0
     ad_first_seen = None
-
     while time.time() - t0 < max_wait:
         elapsed = time.time() - t0
-
         try:
             calls = sb.execute_script(
                 "(function(){ return (window.__reqs||[]).filter(function(r){"
@@ -214,44 +212,38 @@ def wait_ad_flow(sb, before_secs, max_wait=AD_WAIT_SEC):
                 "}).map(function(r){ return {methods: r.methods}; }); })();"
             ) or []
         except Exception as e: log(f"⚠️ 获取 Livewire 调用失败: {e}"); calls = []
-        
         real_methods = []
         for c in calls:
             for m in (c.get('methods') or []):
                 if m not in POLLING_METHODS and m not in real_methods: real_methods.append(m)
-        
         if real_methods:
             log(f"✅ 捕获真实 Livewire 调用: method={real_methods}")
             result['extend_seen'] = True
             screenshot(sb, "extend-call")
             time.sleep(3)
             lt, ls = get_remaining_time(sb)
-            if ls > before_secs + 60: # 检查时间是否显著增加
+            if ls > before_secs + 60:
                 log(f"🎉 页面已实时刷新时间: {lt}")
                 result['live_text'], result['live_secs'] = lt, ls
-            break
-
+                break
         st = read_alpine_state(sb)
         if st:
             if st.get('adRewardReady') is True and not result['reward_ready']:
                 result['reward_ready'] = True
                 log(f"🎁 [{int(elapsed)}s] adRewardReady=true — 广告奖励已就绪!")
-        elif alpine_logged < 2:
-            log(f"🔬 Alpine[{int(elapsed)}s]: 未取到组件状态")
-            alpine_logged += 1
-
+            elif alpine_logged < 2:
+                log(f"🔬 Alpine[{int(elapsed)}s]: 未取到组件状态")
+                alpine_logged += 1
         ad = detect_ad(sb)
         if ad and not result['ad_seen']:
             result['ad_seen'] = True
             ad_first_seen = time.time()
             log(f"🎬 [{int(elapsed)}s] 检测到广告: {ad}")
             screenshot(sb, "ad-showing")
-
         if result['reward_ready'] and not clicked_again:
             clicked_again = True
             log("🖱️ 奖励就绪, 再次点击 +90 触发真正的续期调用...")
             try:
-                # 使用 WebDriverWait 确保按钮可点击
                 WebDriverWait(sb.driver, 10).until(
                     EC.element_to_be_clickable((By.XPATH, "//button[contains(., '+ 90 min')] | //button[contains(., 'watch ad')] | //button[contains(., 'Watch Ad')] | //button[contains(., 'Watch ad')] "))
                 )
@@ -261,12 +253,9 @@ def wait_ad_flow(sb, before_secs, max_wait=AD_WAIT_SEC):
                 log(f"⚠️ 二次点击异常: {e}")
             time.sleep(3)
             continue
-
         if result['ad_seen'] and ad_first_seen:
             try_ad_controls(sb, time.time() - ad_first_seen)
-
-        # 增加更频繁的时间检查，但避免过于频繁导致性能问题
-        if int(elapsed) % 10 == 0 and elapsed > 5: # 每10秒检查一次
+        if int(elapsed) % 10 == 0 and elapsed > 5:
             try:
                 lt, ls = get_remaining_time(sb)
                 if ls > before_secs + 60:
@@ -274,79 +263,99 @@ def wait_ad_flow(sb, before_secs, max_wait=AD_WAIT_SEC):
                     result['live_text'], result['live_secs'] = lt, ls
                     break
             except Exception as e: log(f"⚠️ 实时时间检查失败: {e}")
-
         time.sleep(1)
-
     if not result['live_text']:
         lt, ls = get_remaining_time(sb)
         result['live_text'], result['live_secs'] = lt, ls
-        
     return result['live_text'], result
 
+def is_driver_alive(sb):
+    """【新增】检测浏览器驱动是否仍然存活"""
+    try:
+        _ = sb.driver.current_url
+        return True
+    except Exception:
+        return False
 
 def main():
     if not ACCOUNTS:
         log("❌ 未配置 GAME4FREE_ACCOUNT 环境变量"); return
-        
     for user, pwd in ACCOUNTS:
         log(f"\n========== 开始处理账号: {user} ==========")
-        # 增加对 SeleniumBase 启动参数的注释和清理
-        with SB(test=True, uc=True, headless=True, 
-                proxy=os.environ.get("PROXY_SERVER") if os.environ.get("IS_PROXY") == "true" else None,
-                block_images=True,
-                # 增加一些稳定性参数
-                settings_file=None,
-                recorder_ext=False
-                ) as sb:
+
+        # 【修复1】headless=False — 配合 xvfb-run 虚拟显示, 解决 uc_gui_click_captcha 崩溃
+        # 【修复2】增加 chromium_arg CI 稳定性参数
+        chrome_args = "--no-sandbox,--disable-dev-shm-usage,--disable-gpu,--window-size=1920,1080,--disable-extensions,--disable-notifications"
+
+        with SB(
+            test=True,
+            uc=True,
+            headless=False,  # 【关键修复】改为 False, 由 xvfb-run 提供显示
+            proxy=os.environ.get("PROXY_SERVER") if os.environ.get("IS_PROXY") == "true" else None,
+            block_images=True,
+            settings_file=None,
+            recorder_ext=False,
+            chromium_arg=chrome_args,  # 【关键修复】CI 环境必需参数
+        ) as sb:
             try:
                 log(f"🌐 尝试打开登录页面: https://gaming4free.net/login")
                 sb.open("https://gaming4free.net/login")
+
+                # 【新增】验证浏览器是否存活
+                if not is_driver_alive(sb):
+                    log("❌ 浏览器在打开页面后崩溃, 尝试重新打开...")
+                    sb.open("https://gaming4free.net/login")
+                    if not is_driver_alive(sb):
+                        raise RuntimeError("浏览器连续崩溃, 请检查 Chrome/Chromedriver 版本")
+
                 # 注入请求监听器
                 sb.execute_script("""
-                    window.__reqs = [];
-                    const originalFetch = window.fetch;
-                    window.fetch = function() {
-                        return originalFetch.apply(this, arguments).then(async (response) => {
-                            const clonedResponse = response.clone();
-                            try {
-                                const body = await clonedResponse.json();
-                                window.__reqs.push({
-                                    u: arguments[0],
-                                    m: 'POST',
-                                    methods: body.serverMemo ? body.serverMemo.data.methods : []
-                                });
-                            } catch (e) {}
-                            return response;
-                        });
-                    };
+                window.__reqs = [];
+                const originalFetch = window.fetch;
+                window.fetch = function() {
+                    return originalFetch.apply(this, arguments).then(async (response) => {
+                        const clonedResponse = response.clone();
+                        try {
+                            const body = await clonedResponse.json();
+                            window.__reqs.push({
+                                u: arguments[0],
+                                m: 'POST',
+                                methods: body.serverMemo ? body.serverMemo.data.methods : []
+                            });
+                        } catch (e) {}
+                        return response;
+                    });
+                };
                 """)
                 time.sleep(3)
+
                 handle_turnstile(sb)
-                
+
+                # 【新增】再次验证浏览器存活
+                if not is_driver_alive(sb):
+                    raise RuntimeError("浏览器在 Turnstile 处理后崩溃")
+
                 log(f"🔑 尝试登录账号: {user}")
-                # 增加等待元素可见和可点击的条件
-                WebDriverWait(sb.driver, 10).until(EC.visibility_of_element_located((By.NAME, "email")))
+                WebDriverWait(sb.driver, 15).until(EC.visibility_of_element_located((By.NAME, "email")))
                 sb.type('input[name="email"]', user)
                 sb.type('input[name="password"]', pwd)
                 sb.click('button[type="submit"]')
                 time.sleep(5)
-                
                 handle_turnstile(sb)
                 time.sleep(3)
-                
                 close_modals(sb)
+
                 before_text, before_secs = get_remaining_time(sb)
                 log(f"⏱️ 续期前剩余: {before_text} ({before_secs}s)")
-                
+
                 btn_info = check_button_cooldown(sb)
                 if btn_info and btn_info.get('cooldown'):
                     log(f"⏳ 按钮冷却中: {btn_info.get('text')}")
                     send_tg("按钮冷却中", user, before_text)
                     continue
-                    
+
                 log("🖱️ 点击 +90 按钮...")
                 try:
-                    # 增加等待按钮可点击的条件
                     WebDriverWait(sb.driver, 10).until(
                         EC.element_to_be_clickable((By.XPATH, "//button[contains(., '+ 90 min')] | //button[contains(., 'watch ad')] | //button[contains(., 'Watch Ad')] | //button[contains(., 'Watch ad')] "))
                     )
@@ -357,19 +366,25 @@ def main():
                     screenshot(sb, "click-fail")
                     send_tg("点击按钮失败", user, before_text)
                     continue
-                    
+
                 live_text, res = wait_ad_flow(sb, before_secs)
-                
                 if res['live_secs'] > before_secs + 60:
                     log(f"✅ 续期成功! 新时间: {live_text}")
                     send_tg("✅ 续期成功", user, live_text)
                 else:
                     log(f"❌ 续期失败或超时. 当前时间: {live_text}")
                     send_tg("❌ 续期失败", user, live_text)
-                    
+
             except Exception as e:
                 log(f"❌ 账号 {user} 执行异常: {e}\n{traceback.format_exc()}")
-                screenshot(sb, "error")
+                # 【修复】截图保存到工作区相对路径
+                try:
+                    screenshot(sb, "error")
+                    # 【新增】同时保存页面源码
+                    with open(os.path.join(SCREENSHOT_DIR, "error.html"), "w", encoding="utf-8") as f:
+                        f.write(sb.get_page_source())
+                except Exception as screenshot_err:
+                    log(f"⚠️ 保存调试信息失败: {screenshot_err}")
                 send_tg(f"❌ 执行异常: {e}", user)
 
 if __name__ == "__main__":
