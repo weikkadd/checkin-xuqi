@@ -256,10 +256,11 @@ def wait_ad_flow(sb, before_secs, max_wait=AD_WAIT_SEC):
             screenshot(sb, "ad-showing")
         if result['reward_ready'] and not clicked_again:
             clicked_again = True
-            log("🖱️ 广告奖励已就绪, 等待冷却结束并再次点击...")
+            log("🎁 广告奖励已就绪！等待 5 分钟冷却结束...")
 
-            # 【新增】检测按钮是否在冷却中，等待冷却完成
-            for ci in range(300):  # 最多等 5 分钟
+            # 【关键修复】只需等待冷却结束，无需二次点击
+            # 系统会在冷却完成后自动续期
+            for ci in range(300):  # 最多等 5 分钟 (300 * 10秒)
                 cooldown_info = check_button_cooldown(sb)
                 if cooldown_info and cooldown_info.get('cooldown'):
                     remaining = cooldown_info.get('remaining', '?')
@@ -267,74 +268,23 @@ def wait_ad_flow(sb, before_secs, max_wait=AD_WAIT_SEC):
                     time.sleep(10)
                     continue
                 else:
-                    log("✅ 按钮冷却已结束")
+                    log("✅ 按钮冷却已结束，等待续期生效...")
                     break
 
-            # 第二次点击 — 使用 Livewire API
-            try:
-                log("   📍 通过 Livewire API 触发续期...")
-                lw_result = sb.execute_script("""
-                    var components = window.Livewire ? window.Livewire.all() : [];
-                    for (var c = 0; c < components.length; c++) {
-                        var comp = components[c];
-                        // 尝试常见方法名
-                        ['extendServer', 'extend', 'renew', 'claimReward'].forEach(function(method) {
-                            try {
-                                comp.call(method);
-                                console.log('Called: ' + method);
-                                return method;
-                            } catch(e) {}
-                        });
-                    }
-                    return 'no-match';
-                """)
+            # 再等 30 秒让系统完成续期
+            log("⏳ 等待续期生效 (30秒)...")
+            time.sleep(30)
 
-                if lw_result != 'no-match':
-                    log(f"   ✅ Livewire 调用成功: {lw_result}")
-                else:
-                    # 兜底：直接找按钮点击
-                    log("   ⚠️ Livewire API 未找到匹配方法，尝试 DOM 点击...")
-                    try:
-                        elem2 = sb.find_element(By.CSS_SELECTOR, 'button.rt-btn-free, button[wire:click]', timeout=5)
-                        sb.execute_script("arguments[0].scrollIntoView({block:'center'});", elem2)
-                        time.sleep(0.5)
-                        has_lw = elem2.get_attribute('wire:click')
-                        if has_lw:
-                            sb.execute_script(f"""
-                                var el = arguments[0];
-                                while (el && !el.getAttribute('wire:id')) {{ el = el.parentElement; }}
-                                if (el && window.Livewire) {{
-                                    var cid = el.getAttribute('wire:id');
-                                    var c = window.Livewire.find(cid);
-                                    if (c) {{ c.call('{has_lw}'); return 'lw-called'; }}
-                                }}
-                                return 'fallback-click';
-                            """, elem2)
-                        else:
-                            elem2.click()
-                    except Exception as e:
-                        log(f"   ⚠️ 兜底点击也失败了: {e}")
+            # 检查最终结果
+            lt, ls = get_remaining_time(sb)
+            if ls > before_secs + 3000:  # 增加了至少 50 分钟
+                log(f"🎉 续期成功！新时间: {lt} ({ls//3600}小时{ls%3600//60}分)")
+                result['live_text'], result['live_secs'] = lt, ls
+            else:
+                log(f"⚠️ 续期可能失败。当前时间: {lt} ({ls//3600}小时{ls%3600//60}分)，期望增加3000秒以上")
+                result['live_text'], result['live_secs'] = lt, ls
 
-            except Exception as e:
-                log(f"⚠️ 第二次点击异常: {e}")
-            time.sleep(5)
             continue
-        if result['ad_seen'] and ad_first_seen:
-            try_ad_controls(sb, time.time() - ad_first_seen)
-        if int(elapsed) % 10 == 0 and elapsed > 5:
-            try:
-                lt, ls = get_remaining_time(sb)
-                if ls > before_secs + 60:
-                    log(f"🎉 [{int(elapsed)}秒] 页面时间已自动更新: {lt}")
-                    result['live_text'], result['live_secs'] = lt, ls
-                    break
-            except Exception as e: log(f"⚠️ 实时时间检查失败: {e}")
-        time.sleep(1)
-    if not result['live_text']:
-        lt, ls = get_remaining_time(sb)
-        result['live_text'], result['live_secs'] = lt, ls
-    return result['live_text'], result
-
 def is_driver_alive(sb):
     """【新增】检测浏览器是否仍然正常运行 - 使用更宽松的检测方式"""
     try:
