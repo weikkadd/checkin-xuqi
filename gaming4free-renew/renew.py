@@ -105,7 +105,7 @@ def close_modals(sb):
     except Exception as e: log(f"⚠️ 关闭弹窗总失败: {e}")
 
 def check_button_cooldown(sb):
-    js = """
+    js = r"""
     (function() {
         var btns = document.querySelectorAll('button');
         for (var i = 0; i < btns.length; i++) {
@@ -171,7 +171,7 @@ def read_alpine_state(sb):
     except Exception as e: log(f"⚠️ 读取 Alpine 状态失败: {e}"); return None
 
 def detect_ad(sb):
-    js = """
+    js = r"""
     (function() {
         var vids = document.querySelectorAll('video');
         for (var i = 0; i < vids.length; i++) { if (vids[i].offsetParent !== null) return 'video'; }
@@ -398,6 +398,8 @@ def main():
                         except Exception as e:
                             log(f"⚠️ Cookie 注入失败: {e}")
 
+                    sb.execute_script("""
+                    window.__reqs = [];
                     const originalFetch = window.fetch;
                     window.fetch = function() {
                         return originalFetch.apply(this, arguments).then(async (response) => {
