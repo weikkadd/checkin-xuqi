@@ -444,9 +444,29 @@ def main():
                         raise RuntimeError("浏览器在处理人机验证后意外停止")
 
                     log(f"🔑 准备执行账号操作: {server_name}")
+
+                    # 【关键修复】等待 Livewire/Alpine 组件完全渲染
+                    log("⏳ 等待页面组件完全加载 (最多15秒)...")
+                    rendered = False
+                    for i in range(15):
+                        try:
+                            page_text = sb.execute_script("return document.body?document.body.innerText:'';")
+                            if '+90' in page_text or 'watch ad' in page_text.lower():
+                                rendered = True
+                                log(f"✅ 续期按钮已渲染 (耗时{i+1}秒)")
+                                break
+                        except Exception:
+                            pass
+                        time.sleep(1)
+
+                    if not rendered:
+                        log("⚠️ 超时未检测到续期按钮，尝试向下滚动触发懒加载...")
+                        sb.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                        time.sleep(2)
+                        sb.execute_script("window.scrollTo(0, 0);")
+                        time.sleep(2)
+
                     screenshot(sb, "before-login")
-                    log("🔍 等待页面稳定...")
-                    time.sleep(2)
 
                     before_text, before_secs = get_remaining_time(sb)
                     log(f"⏱️ 续期前剩余时长: {before_text} ({before_secs}秒)")
@@ -457,29 +477,63 @@ def main():
                         send_tg("按钮冷却中", server_name, before_text)
                         continue
 
-                    log("🖱️ 正在点击 +90 分钟续期按钮...")
+                    log("🖱️ 正在寻找并点击 +90 分钟续期按钮...")
                     try:
-                        # 等待按钮出现并可点击
-                        btn_xpath = "//button[contains(., '+ 90 min')] | //button[contains(., 'watch ad')] | //button[contains(., 'Watch Ad')] | //button[contains(., 'Watch ad')]"
+                        # 先获取页面全文检查按钮是否存在
+                        page_text = sb.execute_script("return document.body?document.body.innerText:'';")
+                        has_btn = '+90' in page_text or 'watch ad' in page_text.lower() or 'ad' in page_text.lower()
+                        log(f"🔍 页面包含续期相关内容: {has_btn}")
 
-                        # 方法1: 先用 SeleniumBase 的标准 click
+                        if not has_btn:
+                            log("⚠️ 页面上没有找到续期按钮，截图保存并尝试刷新...")
+                            screenshot(sb, "no-button-found")
+                            sb.refresh()
+                            time.sleep(5)
+                            page_text2 = sb.execute_script("return document.body?document.body.innerText:'';")
+                            has_btn = '+90' in page_text2 or 'watch ad' in page_text2.lower()
+                            log(f"🔄 刷新后是否找到按钮: {has_btn}")
+
+                        # 方法1: 用 CSS selector 查找包含 "90" 的按钮
+                        btn_found = False
                         try:
-                            sb.click(btn_xpath, timeout=10)
-                            log("🎯 首次点击续期按钮完成 (标准click)")
-                        except Exception:
-                            # 方法2: 如果标准click失败，用JS直接触发click
-                            log("⚠️ 标准click失败，尝试JS点击...")
-                            sb.execute_script(f"""
-                                var buttons = document.querySelectorAll('button');
-                                for (var i = 0; i < buttons.length; i++) {{
-                                    if (buttons[i].innerText.includes('90')) {{
-                                        buttons[i].click();
-                                        break;
-                                    }}
-                                }}
+                            elem = sb.find_element('button:contains("+90")', timeout=5)
+                            # 确保按钮可见且可交互
+                            sb.scroll_to_element(elem)
+                            elem.click()
+                            log("🎯 首次点击续期按钮完成 (CSS选择器)")
+                            btn_found = True
+                        except Exception as e1:
+                            log(f"⚠️ CSS选择器点击失败: {e1}")
+
+                        # 方法2: XPath 匹配多种按钮文字
+                        if not btn_found:
+                            try:
+                                xpath = '//button[contains(text(), "+90")] | //button[contains(text(), "90 min")] | //button[contains(text(), "Watch Ad")] | //button[contains(text(), "watch ad")] | //button[contains(@class, "btn-primary")]'
+                                elem2 = sb.find_element(xpath, timeout=5)
+                                sb.scroll_to_element(elem2)
+                                elem2.click()
+                                log("🎯 首次点击续期按钮完成 (XPath)")
+                                btn_found = True
+                            except Exception as e2:
+                                log(f"⚠️ XPath点击失败: {e2}")
+
+                        # 方法3: JS 终极方案 - 找所有含 "90" 文字的 button
+                        if not btn_found:
+                            log("⚠️ 尝试JS方式查找并点击...")
+                            js_result = sb.execute_script("""
+                                var btns = document.querySelectorAll('button');
+                                for (var i = 0; i < btns.length; i++) {
+                                    if ((btns[i].textContent || '').indexOf('90') !== -1) {
+                                        btns[i].scrollIntoView({block: 'center'});
+                                        setTimeout(() => btns[i].click(), 100);
+                                        return 'clicked';
+                                    }
+                                }
+                                return 'not-found';
                             """)
-                            log("🎯 首次点击续期按钮完成 (JS点击)")
-                        time.sleep(2)  # 给 Livewire 响应时间
+                            log(f"🎯 JS点击结果: {js_result}")
+
+                        time.sleep(3)  # 给 Livewire 足够响应时间
                     except Exception as e:
                         log(f"⚠️ 首次点击失败: {e}")
                         screenshot(sb, "点击失败截图")
