@@ -501,31 +501,77 @@ def main():
                         except Exception as e:
                             log(f"⚠️ sb.click() 失败: {e}")
 
-                    # 策略2: 先用 sb.find_element + click()（SeleniumBase CSS 选择器）
+                    # 策略2: driver.findElement + JavaScript click（绕过 sb.click 的参数限制）
                     if not click_done:
                         try:
-                            log("📍 尝试 sb.find_element + .click()...")
-                            # SeleniumBase 不支持复杂 XPath，用简单的 CSS 选择器
-                            elem = sb.find_element('button', timeout=5)
-                            # 遍历找到含 "90" 的那个
-                            found_elem = None
-                            elems = sb.driver.find_elements(By.TAG_NAME, 'button')
-                            for e in elems:
-                                if '90' in (e.text or ''):
-                                    found_elem = e
-                                    break
+                            log("📍 尝试 driver.findElements + JS click...")
+                            js_result = sb.execute_script("""
+                                var allBtns = document.querySelectorAll('button');
+                                for (var i = 0; i < allBtns.length; i++) {
+                                    var text = (allBtns[i].textContent || '').trim();
+                                    if (text.indexOf('90') !== -1) {
+                                        // 确保按钮可见且可交互
+                                        allBtns[i].style.pointerEvents = 'auto';
+                                        allBtns[i].style.visibility = 'visible';
+                                        allBtns[i].style.opacity = '1';
+                                        allBtns[i].removeAttribute('disabled');
+                                        allBtns[i].classList.remove('opacity-50', 'cursor-not-allowed');
 
-                            if found_elem:
-                                sb.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", found_elem)
-                                time.sleep(0.3)
-                                # 使用 SeleniumBase 的 click 方法（会模拟完整鼠标事件）
-                                sb.click(found_elem)
-                                log("✅ find_element + sb.click() 成功")
+                                        // scrollIntoView
+                                        allBtns[i].scrollIntoView({behavior: 'instant', block: 'center'});
+
+                                        // 获取 Alpine.js / Livewire 绑定的数据
+                                        var root = allBtns[i];
+                                        var alpineData = null;
+                                        while (root && !alpineData) {
+                                            try {
+                                                if (window.Alpine && Alpine.$data) alpineData = Alpine.$data(root);
+                                                else if (root.__x && root.__x.$data) alpineData = root.__x.$data;
+                                            } catch(e) {}
+                                            if (!alpineData) root = root.parentElement;
+                                        }
+
+                                        if (alpineData) {
+                                            console.log('Alpine keys:', Object.keys(alpineData).slice(0,8));
+                                        }
+
+                                        // 关键：检查按钮是否有 @click 或 wire:click 属性
+                                        var hasWireClick = allBtns[i].hasAttribute('wire:click') 
+                                            || allBtns[i].hasAttribute('@click')
+                                            || allBtns[i].hasAttribute('x-on:click');
+
+                                        // 如果有 Livewire 绑定，先触发 livewire 事件再 click
+                                        if (hasWireClick) {
+                                            // 手动触发 Livewire 的 dispatchEvent
+                                            var eventName = null;
+                                            if (allBtns[i].hasAttribute('wire:click')) {
+                                                eventName = allBtns[i].getAttribute('wire:click');
+                                            } else if (allBtns[i].hasAttribute('@click')) {
+                                                eventName = allBtns[i].getAttribute('@click').replace(/'/g,'').replace(/"/g,'');
+                                            }
+
+                                            if (eventName) {
+                                                console.log('Found Livewire event:', eventName);
+                                                // 通过 Livewire 组件发送事件
+                                                var component = window.Livewire ? window.Livewire.find(allBtns[i].closest('[wire:id]').getAttribute('wire:id')) : null;
+                                                if (component) {
+                                                    component.dispatch(event => { /* no-op */ });
+                                                }
+                                            }
+                                        }
+
+                                        // 最后直接调用原生 click
+                                        allBtns[i].click();
+                                        return 'clicked:' + text.substring(0,20) + '|wire:' + hasWireClick + '|' + (eventName||'none');
+                                    }
+                                }
+                                return 'not-found';
+                            """)
+                            log(f"🎯 JS click 结果: {js_result}")
+                            if 'clicked' in js_result:
                                 click_done = True
-                            else:
-                                log("⚠️ 未找到包含 '90' 的按钮元素")
                         except Exception as e:
-                            log(f"⚠️ find_element 失败: {e}")
+                            log(f"⚠️ driver.findElements 失败: {e}")
 
                     # 策略3: 最后用 JS click() 直接调用（绕过所有事件系统）
                     if not click_done:
