@@ -482,17 +482,8 @@ def main():
                     # 【核心修复】先等待 Alpine.js 组件初始化完成，再找按钮
                     log("⏳ 等待 Alpine.js 组件初始化...")
                     sb.execute_script("""
-                        // 确保 Alpine.js 已加载
-                        if (typeof Alpine !== 'undefined') {
-                            Alpine.waitUntilDefined('data');
-                            // 触发所有 x-data 组件的初始化
-                            document.querySelectorAll('[x-data]').forEach(function(el) {
-                                if (!el.__x) {
-                                    try { Alpine.initElement(el); } catch(e) {}
-                                }
-                            });
-                        }
-                        return 'alpine-init-done';
+                        // 简单等待：让页面自然渲染，不做 Alpine API 调用
+                        return typeof Alpine !== 'undefined' ? 'alpine-loaded' : 'no-alpine';
                     """)
                     time.sleep(2)
 
