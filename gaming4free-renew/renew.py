@@ -380,12 +380,14 @@ def main():
                         log(f"📄 页面标题: {title}")
                         if title:
                             log("✅ 页面加载成功")
+                    except Exception as e:
+                        log(f"⚠️ 无法获取页面标题: {e}")
 
                     # 注入 Cookie
                     if GF_COOKIE:
                         log("🍪 注入 Cookie...")
                         try:
-                            for cookie in GF_COOKIE.split(";" ):
+                            for cookie in GF_COOKIE.split(";"):
                                 if "=" in cookie:
                                     name, value = cookie.split("=", 1)
                                     cookie_dict = {"name": name.strip(), "value": value.strip(), "domain": ".gaming4free.net"}
@@ -395,13 +397,7 @@ def main():
                             log("✅ Cookie 注入完成")
                         except Exception as e:
                             log(f"⚠️ Cookie 注入失败: {e}")
-                    except Exception as e:
-                        log(f"⚠️ 无法获取页面标题: {e}")
-                        # 不抛出异常，继续尝试
 
-                    # 注入请求监听器
-                    sb.execute_script("""
-                    window.__reqs = [];
                     const originalFetch = window.fetch;
                     window.fetch = function() {
                         return originalFetch.apply(this, arguments).then(async (response) => {
