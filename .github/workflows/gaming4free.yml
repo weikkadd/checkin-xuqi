@@ -26,24 +26,36 @@ jobs:
           sudo apt-get install -y \
             xvfb \
             xdotool \
-            wget
+            wget \
+            unzip
 
       - name: 🌐 安装 Chrome 和匹配的 Chromedriver
         run: |
           CHROME_VERSION="124.0.6367"
           echo "[INFO] Chrome 主版本: $CHROME_VERSION"
+          
+          # 创建临时目录
+          mkdir -p /tmp/chrome-setup
+          
+          # 下载 Chrome
           CHROME_URL="https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chrome-linux64.zip"
-          wget -q "$CHROME_URL" -O /tmp/chrome.zip
-          unzip -q /tmp/chrome.zip -d /opt/
-          sudo cp /opt/chrome-linux64/google-chrome /usr/bin/
+          echo "[INFO] 下载 Chrome: $CHROME_URL"
+          wget --timeout=60 --tries=3 "$CHROME_URL" -O /tmp/chrome-setup/chrome.zip || exit 1
+          unzip -q /tmp/chrome-setup/chrome.zip -d /tmp/chrome-setup/
+          sudo cp /tmp/chrome-setup/chrome-linux64/google-chrome /usr/bin/
           sudo chmod +x /usr/bin/google-chrome
+          
+          # 下载 Chromedriver
           CHROMEDRIVER_URL="https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chromedriver-linux64.zip"
-          wget -q "$CHROMEDRIVER_URL" -O /tmp/chromedriver.zip
-          unzip -q /tmp/chromedriver.zip -d /tmp/
-          sudo cp /tmp/chromedriver-linux64/chromedriver /usr/local/bin/
+          echo "[INFO] 下载 Chromedriver: $CHROMEDRIVER_URL"
+          wget --timeout=60 --tries=3 "$CHROMEDRIVER_URL" -O /tmp/chrome-setup/chromedriver.zip || exit 1
+          unzip -q /tmp/chrome-setup/chromedriver.zip -d /tmp/chrome-setup/
+          sudo cp /tmp/chrome-setup/chromedriver-linux64/chromedriver /usr/local/bin/
           sudo chmod +x /usr/local/bin/chromedriver
-          echo "[INFO] Chrome: $(/usr/bin/google-chrome --version)"
-          echo "[INFO] Chromedriver: $(chromedriver --version)"
+          
+          # 验证
+          echo "[INFO] Chrome 版本: $(/usr/bin/google-chrome --version)"
+          echo "[INFO] Chromedriver 版本: $(chromedriver --version)"
 
       - name: 🐍 安装 Python 依赖
         working-directory: gaming4free-renew
