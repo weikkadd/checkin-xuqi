@@ -1,4 +1,4 @@
-name: Game4Free-Renew
+name: Game4Free 自动续期
 on:
   workflow_dispatch:
   schedule:
@@ -12,21 +12,21 @@ jobs:
       actions: write
       contents: read
     steps:
-      - name: Checkout
+      - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: 配置 Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
-      - name: Install Chrome with browser-actions
+      - name: 安装 Chrome 浏览器
         uses: browser-actions/setup-chrome@v1
         with:
           chrome-version: stable
         id: chrome
 
-      - name: Install system dependencies
+      - name: 安装系统依赖
         run: |
           sudo apt-get update -q
           sudo apt-get install -y \
@@ -36,19 +36,19 @@ jobs:
             libxcomposite1 libxrandr2 libgbm1 \
             libpango-1.0-0 libcairo2 fonts-liberation
 
-      - name: Verify Chrome and Chromedriver
+      - name: 验证 Chrome 和 Chromedriver
         run: |
           echo "[INFO] Chrome: $(google-chrome --version)"
           echo "[INFO] Chrome path: $(which google-chrome)"
           echo "[INFO] Chromedriver: $(chromedriver --version)"
           echo "[INFO] Chromedriver path: $(which chromedriver)"
 
-      - name: Install Python dependencies
+      - name: 安装 Python 依赖
         working-directory: gaming4free-renew
         run: |
           pip install seleniumbase
 
-      - name: Setup proxy (sing-box)
+      - name: 配置代理 (sing-box)
         continue-on-error: true
         env:
           NODE_LINK: ${{ secrets.PROXY_URL }}
@@ -69,7 +69,7 @@ jobs:
             echo "PROXY_SERVER=" >> $GITHUB_ENV
           fi
 
-      - name: Run renewal script
+      - name: 运行续期脚本
         env:
           PYTHONIOENCODING: utf-8
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
@@ -86,7 +86,7 @@ jobs:
         run: |
           xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python renew.py
 
-      - name: Upload screenshots
+      - name: 上传调试截图
         if: always()
         uses: actions/upload-artifact@v4
         with:
