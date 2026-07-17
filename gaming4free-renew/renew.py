@@ -501,69 +501,120 @@ def main():
                         except Exception as e:
                             log(f"⚠️ sb.click() 失败: {e}")
 
-                    # 策略2: 用 Livewire 正确的事件机制触发续期
+                    # 策略2: 模拟真实人类鼠标点击 — 从远处移动到按钮位置再按下
                     if not click_done:
                         try:
-                            log("📍 尝试 Livewire 事件触发...")
+                            log("📍 尝试模拟真实人类鼠标点击...")
                             js_result = sb.execute_script("""
                                 var btns = document.querySelectorAll('button');
+                                var targetBtn = null;
+
+                                // 先找到目标按钮
                                 for (var i = 0; i < btns.length; i++) {
                                     var text = (btns[i].textContent || '').trim();
                                     if (text.indexOf('90') !== -1) {
-                                        // 清除阻止样式
-                                        btns[i].style.cssText += '; pointer-events:auto !important; visibility:visible !important; opacity:1 !important;';
-                                        btns[i].removeAttribute('disabled');
+                                        targetBtn = btns[i];
 
-                                        // 找到 wire:click 事件名
-                                        var eventName = null;
-                                        if (btns[i].hasAttribute('wire:click')) {
-                                            eventName = btns[i].getAttribute('wire:click');
-                                        } else if (btns[i].hasAttribute('@click')) {
-                                            eventName = btns[i].getAttribute('@click').replace(/['"]/g, '');
-                                        }
-
-                                        // 找到 Livewire 组件实例
-                                        var componentEl = btns[i];
-                                        while (componentEl && !componentEl.getAttribute('wire:id')) {
-                                            componentEl = componentEl.parentElement;
-                                        }
-
-                                        if (componentEl && window.Livewire) {
-                                            var componentId = componentEl.getAttribute('wire:id');
-                                            var component = window.Livewire.all().find(c => c.id === componentId);
-
-                                            if (component) {
-                                                console.log('Found Livewire component, dispatching event: ' + eventName);
-
-                                                // 方法1: dispatch livewire:call 事件
-                                                btns[i].dispatchEvent(new CustomEvent('livewire:call', {
-                                                    bubbles: true,
-                                                    detail: { name: eventName, params: [] }
-                                                }));
-
-                                                // 方法2: 同时调用组件的 call 方法
-                                                setTimeout(() => {
-                                                    try { component.call(eventName); } catch(e) {}
-                                                }, 50);
-
-                                                return 'lw-dispatched:' + eventName;
-                                            }
-                                        }
-
-                                        // 兜底：如果没有 Livewire API，手动模拟完整鼠标事件链
-                                        ['mousedown','mouseup','click'].forEach(function(evt){
-                                            btns[i].dispatchEvent(new MouseEvent(evt, {bubbles:true, cancelable:true, view:window}));
-                                        });
-                                        return 'manual-click:' + (eventName||'none');
+                                        // 清除阻止交互的样式
+                                        targetBtn.style.cssText += '; pointer-events:auto !important; visibility:visible !important; opacity:1 !important;';
+                                        targetBtn.removeAttribute('disabled');
+                                        targetBtn.className = targetBtn.className.replace(/\b(opacity-50|cursor-not-allowed|pointer-events-none)\b/g, '');
+                                        break;
                                     }
                                 }
-                                return 'not-found';
+
+                                if (!targetBtn) return 'not-found';
+
+                                // 滚动到视口中间
+                                targetBtn.scrollIntoView({behavior: 'instant', block: 'center'});
+
+                                // 获取按钮中心坐标
+                                var rect = targetBtn.getBoundingClientRect();
+                                var centerX = rect.left + rect.width / 2;
+                                var centerY = rect.top + rect.height / 2;
+
+                                // 模拟真实人类行为：从屏幕右下角缓慢移动到按钮上方
+                                var startX = window.innerWidth - 100;
+                                var startY = window.innerHeight - 100;
+
+                                // 创建随机偏移路径（人类不会走直线）
+                                var midX = (startX + centerX) / 2 + (Math.random() * 60 - 30);
+                                var midY = (startY + centerY) / 2 + (Math.random() * 60 - 30);
+
+                                // Step 1: mouseover at start position
+                                targetBtn.dispatchEvent(new MouseEvent('mouseover', {
+                                    bubbles: true, cancelable: true,
+                                    clientX: startX, clientY: startY, screenX: startX, screenY: startY, view: window
+                                }));
+
+                                // Step 2: mousemove along path (模拟移动轨迹)
+                                function moveAlongPath(points, delay) {
+                                    return new Promise(function(resolve) {
+                                        points.forEach(function(p, idx) {
+                                            setTimeout(function() {
+                                                targetBtn.dispatchEvent(new MouseEvent('mousemove', {
+                                                    bubbles: true, cancelable: true,
+                                                    clientX: p.x, clientY: p.y, screenX: Math.round(p.x * 1.5), screenY: Math.round(p.y * 1.5), view: window
+                                                }));
+                                            }, idx * delay);
+                                        });
+                                        setTimeout(resolve, points.length * delay);
+                                    });
+                                }
+
+                                // 生成路径点
+                                var pathPoints = [
+                                    {x: startX, y: startY},
+                                    {x: midX, y: midY},
+                                    {x: centerX, y: centerY}
+                                ];
+
+                                // Step 3: mousedown at button center
+                                targetBtn.dispatchEvent(new MouseEvent('mousedown', {
+                                    bubbles: true, cancelable: true, composed: true,
+                                    clientX: centerX, clientY: centerY, screenX: Math.round(centerX * 1.5), screenY: Math.round(centerY * 1.5),
+                                    button: 0, buttons: 1, view: window
+                                }));
+
+                                // Step 4: tiny random movement during hold (人类按住时会微抖)
+                                var microJitter = [
+                                    {dx: Math.random()*4-2, dy: Math.random()*4-2},
+                                    {dx: Math.random()*4-2, dy: Math.random()*4-2},
+                                    {dx: Math.random()*4-2, dy: Math.random()*4-2}
+                                ];
+                                microJitter.forEach(function(j, idx) {
+                                    setTimeout(function() {
+                                        targetBtn.dispatchEvent(new MouseEvent('mousemove', {
+                                            bubbles: true, cancelable: true,
+                                            clientX: centerX+j.dx, clientY: centerY+j.dy,
+                                            view: window
+                                        }));
+                                    }, 50 + idx*15);
+                                });
+
+                                // Step 5: mouseup after realistic delay (human avg click hold: 80-150ms)
+                                setTimeout(function() {
+                                    targetBtn.dispatchEvent(new MouseEvent('mouseup', {
+                                        bubbles: true, cancelable: true, composed: true,
+                                        clientX: centerX, clientY: centerY,
+                                        button: 0, buttons: 0, view: window
+                                    }));
+
+                                    // Step 6: final click
+                                    targetBtn.dispatchEvent(new MouseEvent('click', {
+                                        bubbles: true, cancelable: true, composed: true,
+                                        clientX: centerX, clientY: centerY,
+                                        button: 0, buttons: 0, view: window
+                                    }));
+                                }, 100 + Math.random()*50);
+
+                                return 'real-human-click-simulated:center=(' + Math.round(centerX) + ',' + Math.round(centerY) + ')';
                             """)
-                            log(f"🎯 Livewire 触发结果: {js_result}")
-                            if 'lw-dispatched' in js_result or 'manual-click' in js_result:
+                            log(f"🎯 真实鼠标模拟结果: {js_result}")
+                            if 'real-human' in js_result:
                                 click_done = True
                         except Exception as e:
-                            log(f"⚠️ Livewire 触发失败: {e}")
+                            log(f"⚠️ 真实鼠标模拟失败: {e}")
 
                     # 策略3: 最后用 JS click() 直接调用（绕过所有事件系统）
                     if not click_done:
