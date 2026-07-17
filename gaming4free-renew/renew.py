@@ -413,6 +413,17 @@ def main():
                             sb.open(server_url, timeout=30)
                             time.sleep(3)
                             log("✅ Cookie 凭证注入完成")
+                            # 【关键】Cookie 注入后等待足够时间让 Livewire/Alpine 完全渲染
+                            log("⏳ 等待 Livewire/Alpine 组件完全挂载...")
+                            for wi2 in range(10):
+                                try:
+                                    body_text = sb.execute_script("return document.body?document.body.innerText:;");
+                                    if body_text and ('90' in body_text or 'extend' in body_text.lower()):
+                                        log(f"✅ 组件已挂载 ({wi2+1}秒)")
+                                        break
+                                except Exception:
+                                    pass
+                                time.sleep(1)
                         except Exception as e:
                             log(f"⚠️ Cookie 注入失败: {e}")
 
