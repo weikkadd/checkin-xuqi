@@ -12,54 +12,50 @@ jobs:
       actions: write
       contents: read
     steps:
-      - name: 📥 拉取代码
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: 🐍 设置 Python
+      - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
-      - name: 🛠️ 安装系统依赖
+      - name: Install system dependencies
         run: |
           sudo apt-get update -q
           sudo apt-get install -y \
-            xvfb \
-            xdotool \
-            wget \
-            unzip
+            xvfb xdotool wget unzip \
+            libnss3 libatk1.0-0 libatk-bridge2.0-0 \
+            libcups2 libdrm2 libxkbcommon0 \
+            libxcomposite1 libxrandr2 libgbm1 \
+            libpango-1.0-0 libcairo2 fonts-liberation
 
-      - name: 🌐 安装 Chrome 和匹配的 Chromedriver
+      - name: Install Chrome and Chromedriver
         run: |
           CHROME_VERSION="124.0.6367.91"
-          echo "[INFO] Chrome 版本: $CHROME_VERSION"
+          echo "[INFO] Chrome version: $CHROME_VERSION"
           
-          # 下载 Chrome (注意: 解压后文件名是 chrome, 不是 google-chrome)
           CHROME_URL="https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chrome-linux64.zip"
-          echo "[INFO] 下载 Chrome..."
           wget --timeout=60 "$CHROME_URL" -O /tmp/chrome.zip || exit 1
           unzip -q /tmp/chrome.zip -d /opt/
           sudo cp /opt/chrome-linux64/chrome /usr/bin/google-chrome
           sudo chmod +x /usr/bin/google-chrome
           
-          # 下载 Chromedriver
           CHROMEDRIVER_URL="https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chromedriver-linux64.zip"
-          echo "[INFO] 下载 Chromedriver..."
           wget --timeout=60 "$CHROMEDRIVER_URL" -O /tmp/chromedriver.zip || exit 1
           unzip -q /tmp/chromedriver.zip -d /opt/
           sudo cp /opt/chromedriver-linux64/chromedriver /usr/local/bin/
           sudo chmod +x /usr/local/bin/chromedriver
           
-          # 验证
           echo "[INFO] Chrome: $(/usr/bin/google-chrome --version)"
           echo "[INFO] Chromedriver: $(chromedriver --version)"
 
-      - name: 🐍 安装 Python 依赖
+      - name: Install Python dependencies
         working-directory: gaming4free-renew
         run: |
           pip install seleniumbase
 
-      - name: 🔗 设置代理 (sing-box)
+      - name: Setup proxy (sing-box)
         continue-on-error: true
         env:
           NODE_LINK: ${{ secrets.PROXY_URL }}
@@ -70,7 +66,7 @@ jobs:
             if curl -x "socks5://127.0.0.1:1080" --max-time 5 -s https://api.ipify.org > /dev/null 2>&1; then
               echo "IS_PROXY=true" >> $GITHUB_ENV
               echo "PROXY_SERVER=socks5://127.0.0.1:1080" >> $GITHUB_ENV
-              echo "代理出口: $(curl -x 'socks5://127.0.0.1:1080' -s https://api.ipify.org)"
+              echo "Proxy IP: $(curl -x 'socks5://127.0.0.1:1080' -s https://api.ipify.org)"
             else
               echo "IS_PROXY=false" >> $GITHUB_ENV
               echo "PROXY_SERVER=" >> $GITHUB_ENV
@@ -80,7 +76,7 @@ jobs:
             echo "PROXY_SERVER=" >> $GITHUB_ENV
           fi
 
-      - name: 🔧 验证代理连接
+      - name: Verify proxy
         run: |
           if [ "${IS_PROXY}" = "true" ]; then
             curl -x "$PROXY_SERVER" -s --max-time 10 https://api.ipify.org && echo
@@ -88,7 +84,7 @@ jobs:
             curl -s --max-time 10 https://api.ipify.org && echo
           fi
 
-      - name: 🚀 运行续期脚本
+      - name: Run renewal script
         env:
           PYTHONIOENCODING: utf-8
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
@@ -101,7 +97,7 @@ jobs:
         run: |
           xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python renew.py
 
-      - name: 📸 上传截图
+      - name: Upload screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
