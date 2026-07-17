@@ -356,7 +356,7 @@ def main():
                     
                     # 【修复 #7】增加超时时间
                     try:
-                        sb.open("https://gaming4free.net/login", timeout=30)
+                        sb.open(user_server_url, timeout=30)
                     except Exception as open_err:
                         log(f"⚠️ 页面打开异常: {open_err}")
                         raise RuntimeError("页面打开失败")
@@ -379,7 +379,7 @@ def main():
                         title = sb.execute_script("return document.title || '';")
                         log(f"📄 页面标题: {title}")
                         if title:
-                            log("✅ 登录页面加载成功")
+                            log("✅ 页面加载成功")
                     except Exception as e:
                         log(f"⚠️ 无法获取页面标题: {e}")
                         # 不抛出异常，继续尝试
