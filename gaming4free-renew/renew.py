@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """
-Gaming4Free Renew Pro v8 - 自动续期脚本增强版
+Gaming4Free Renew Pro v10 - 自动续期脚本增强版
 - 三层点击策略 (Livewire API + Event Dispatch + Native Click)
 - 广告DOM详细检测 (iframe, body text, ad elements)
 - Pro成功验证 (多重判断: 倒计时/Livewire/页面刷新/奖励状态)
 - 自动失败重试 + 广告卡死检测 + 页面恢复
 - Livewire网络监听 + 真实method捕获 + 主动component.call()
 - TG Pro详细通知
+- Turnstile 实时监控 + CDP 真实点击 + UC 模式
 """
 import os, time, random, urllib.request, urllib.parse, re
 import datetime
 import traceback
+import subprocess
 from seleniumbase import SB
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -79,7 +81,7 @@ def send_tg(result, server_name="", expiry=""):
 {expiry}
 
 ⚙️模式:
-Renew-Pro v8
+Renew-Pro v10
 """
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
     data = urllib.parse.urlencode({"chat_id": TG_CHAT_ID, "text": msg}).encode()
@@ -159,149 +161,51 @@ def check_button_cooldown(sb):
     try: return sb.execute_script(js)
     except Exception as e: log(f"⚠️ 检查按钮冷却失败: {e}"); return None
 
-def handle_turnstile(sb, max_retries=5):
-    """处理 Cloudflare Turnstile 人机验证 (GitHub Actions 加强版)
-
-    核心难点: Cloudflare Turnstile 检查 event.isTrusted
-      - dispatchEvent(new MouseEvent) → isTrusted=false → 被忽略
-      - CDP Input.dispatchMouseEvent → isTrusted=false → 被忽略 (CDP 合成事件)
-      - xdotool 系统级鼠标 → isTrusted=true → 接受 (唯一可行方案)
-      - SeleniumBase uc_gui_click_captcha 内部用的就是 xdotool
-
-    多策略依次尝试:
-      1. uc_gui_click_captcha (SeleniumBase 内置, xdotool)
-      2. 直接调用 xdotool 点击 Turnstile iframe 复选框坐标
-      3. iframe 内 checkbox JS 点击 (兜底, 可能无效)
-      4. 等待自动通过 (无交互模式)
-    """
-    import subprocess
-
+def handle_turnstile(sb, max_retries=3):
+    """处理 Cloudflare Turnstile 人机验证 (Pro增强版)"""
     for attempt in range(max_retries):
         try:
-            cf_iframes = sb.find_elements('iframe[src*="cloudflare"]') or \
-                         sb.find_elements('iframe[src*="challenges.cloudflare.com"]') or \
-                         sb.find_elements('iframe[src*="turnstile"]') or \
-                         sb.find_elements('iframe[title*="challenge"]') or \
-                         sb.find_elements('iframe[title*="Cloudflare"]')
-            if not cf_iframes:
-                return False
-
-            log(f"🛡️ 检测到 Turnstile (第 {attempt+1}/{max_retries} 次尝试)")
-            if attempt == 0:
-                screenshot(sb, "turnstile-start")
-
-            # 获取 Turnstile iframe 在屏幕上的绝对坐标 (含 Xvfb 偏移)
-            iframe = cf_iframes[0]
-            # 获取更多上下文: iframe rect + window 尺寸 + 滚动偏移
-            rect_info = sb.execute_script(
-                "(function() { var el = arguments[0]; var r = el.getBoundingClientRect(); "
-                "return {x: r.x, y: r.y, w: r.width, h: r.height, "
-                "winW: window.innerWidth, winH: window.innerHeight, "
-                "scrollX: window.scrollX, scrollY: window.scrollY, "
-                "outerW: window.outerWidth, outerH: window.outerHeight, "
-                "screenX: window.screenX, screenY: window.screenY}; })();",
-                iframe
-            )
-
-            if not rect_info or rect_info.get('w', 0) <= 0:
-                log(f"⚠️ [尝试 {attempt+1}] 无法获取 iframe 坐标")
-                time.sleep(2)
-                continue
-
-            log(f"🐛 iframe rect_info: {rect_info}")
-
-            # Xvfb 中 Chrome 全屏, 视口坐标 == 屏幕坐标 (通常 screenX/screenY=0)
-            # 但有时 Chrome 窗口有标题栏, 需要 + outerH - innerH 偏移
-            chrome_offset_y = max(0, int(rect_info.get('outerH', 0) - rect_info.get('winH', 0)))
-            screen_offset_x = int(rect_info.get('screenX', 0))
-            screen_offset_y = int(rect_info.get('screenY', 0))
-
-            # iframe 在屏幕上的真实坐标
-            iframe_x = rect_info['x'] + screen_offset_x
-            iframe_y = rect_info['y'] + screen_offset_y + chrome_offset_y
-
-            # Turnstile 复选框位置: iframe 左侧约 30px (复选框 26px + 4px padding), 垂直居中
-            click_x = int(iframe_x + 30)
-            click_y = int(iframe_y + rect_info['h'] / 2)
-
-            log(f"🎯 iframe 屏幕 ({iframe_x}, {iframe_y}) | 复选框 ({click_x}, {click_y}) | chrome_offset_y={chrome_offset_y}")
-
-            # 策略 1: SeleniumBase uc_gui_click_captcha (内部用 xdotool, 自动找复选框)
-            try:
-                sb.uc_gui_click_captcha()
-                log(f"✅ [尝试 {attempt+1}] uc_gui_click_captcha 已执行")
-                time.sleep(4)
-                if not sb.find_elements('iframe[src*="cloudflare"]') and \
-                   not sb.find_elements('iframe[src*="challenges.cloudflare.com"]'):
-                    log("🎉 Turnstile 已消失 (策略1 uc_gui_click_captcha 成功)")
-                    return True
-                log(f"⚠️ [尝试 {attempt+1}] uc_gui_click_captcha 后 Turnstile 仍在")
-            except Exception as e:
-                log(f"⚠️ [尝试 {attempt+1}] uc_gui_click_captcha 失败: {e}")
-
-            # 策略 2: 直接调用 xdotool 系统级点击 (多个候选位置)
-            # Turnstile 复选框实际位置可能因 iframe 边距而偏移, 试多个 X 坐标
-            for offset_x in [30, 25, 35, 20, 40]:
+            if sb.find_elements('iframe[src*="cloudflare"]') or sb.find_elements('iframe[src*="turnstile"]'):
+                log(f"🛡️ 检测到 Cloudflare 人机验证 (第 {attempt+1}/{max_retries} 次尝试)")
+                screenshot(sb, f"turnstile-{attempt}")
+                
+                # 1. 优先尝试 UC 模式的原生点击 (isTrusted=true)
                 try:
-                    target_x = int(iframe_x + offset_x)
-                    target_y = click_y
-                    # 先移动鼠标 (这步很关键, Turnstile 会检测鼠标移动轨迹)
-                    subprocess.run(
-                        ["xdotool", "mousemove", "--sync", str(target_x), str(target_y)],
-                        check=False, timeout=5, capture_output=True
-                    )
-                    time.sleep(0.3)
-                    # 真实点击
-                    subprocess.run(
-                        ["xdotool", "click", "--window", "%1", "1"],
-                        check=False, timeout=5, capture_output=True
-                    )
-                    log(f"✅ [尝试 {attempt+1}] xdotool 点击 ({target_x}, {target_y}) offset_x={offset_x}")
-                    time.sleep(4)
-                    if not sb.find_elements('iframe[src*="cloudflare"]') and \
-                       not sb.find_elements('iframe[src*="challenges.cloudflare.com"]'):
-                        log(f"🎉 Turnstile 已消失 (策略2 xdotool 成功, offset_x={offset_x})")
-                        return True
+                    sb.uc_gui_click_captcha()
+                    log("✅ uc_gui_click_captcha 已成功执行")
+                    time.sleep(5)
+                    if not sb.find_elements('iframe[src*="cloudflare"]'): return True
                 except Exception as e:
-                    log(f"⚠️ [尝试 {attempt+1}] xdotool offset={offset_x} 失败: {e}")
+                    log(f"⚠️ uc_gui_click_captcha 执行失败: {e}")
 
-            log(f"⚠️ [尝试 {attempt+1}] xdotool 5 个候选位置都未通过")
-
-            # 策略 3: iframe 内 checkbox JS 点击 (兜底, 可能无效)
-            try:
-                sb.switch_to.frame(iframe)
-                time.sleep(0.5)
-                checkboxes = sb.find_elements('input[type="checkbox"]')
-                if checkboxes:
-                    sb.execute_script("arguments[0].click();", checkboxes[0])
-                    log(f"✅ [尝试 {attempt+1}] iframe 内 checkbox 点击")
-                    time.sleep(4)
-                sb.switch_to.default_content()
-                if not sb.find_elements('iframe[src*="cloudflare"]') and \
-                   not sb.find_elements('iframe[src*="challenges.cloudflare.com"]'):
-                    log("🎉 Turnstile 已消失 (策略3 iframe 内点击 成功)")
-                    return True
-            except Exception as e:
-                log(f"⚠️ [尝试 {attempt+1}] iframe 内点击失败: {e}")
+                # 2. 尝试使用 xdotool 进行底层系统点击 (绕过 CDP 检测)
                 try:
-                    sb.switch_to.default_content()
-                except:
-                    pass
+                    cf_iframes = sb.find_elements('iframe[src*="challenges.cloudflare.com"]') or \
+                                 sb.find_elements('iframe[src*="cloudflare"]')
+                    if cf_iframes:
+                        iframe = cf_iframes[0]
+                        rect = sb.execute_script(
+                            "(function() { var el = arguments[0]; var r = el.getBoundingClientRect(); "
+                            "return {x: r.x, y: r.y, w: r.width, h: r.height}; })();",
+                            iframe
+                        )
+                        if rect and rect.get('w', 0) > 0:
+                            # 点击 checkbox 区域 (iframe 左侧 30px)
+                            click_x = int(rect['x'] + 30)
+                            click_y = int(rect['y'] + rect['h'] / 2)
+                            log(f"📍 xdotool 尝试点击坐标: ({click_x}, {click_y})")
+                            subprocess.run(["xdotool", "mousemove", str(click_x), str(click_y)], check=False)
+                            time.sleep(0.2)
+                            subprocess.run(["xdotool", "click", "1"], check=False)
+                            time.sleep(5)
+                            if not sb.find_elements('iframe[src*="cloudflare"]'): return True
+                except Exception as ex:
+                    log(f"⚠️ xdotool 点击异常: {ex}")
 
-            # 策略 4: 等待自动通过 (Turnstile 有时无交互通过)
-            time.sleep(3)
-            if not sb.find_elements('iframe[src*="cloudflare"]') and \
-               not sb.find_elements('iframe[src*="challenges.cloudflare.com"]'):
-                log("🎉 Turnstile 已消失 (自动通过)")
-                return True
-
-        except Exception as e:
-            log(f"⚠️ [尝试 {attempt+1}] Turnstile 处理异常: {e}")
-
+            else:
+                return False
+        except Exception as e: log(f"⚠️ Turnstile 处理异常: {e}")
         time.sleep(2)
-
-    screenshot(sb, "turnstile-failed")
-    log(f"❌ Turnstile 处理 {max_retries} 次仍未通过")
     return False
 
 POLLING_METHODS = ('$refresh', 'refresh', 'poll', '$poll')
@@ -514,126 +418,80 @@ def analyze_livewire(sb):
             m = re.findall(r'"methods"\s*:\s*\[\s*"([^"]+)"', text)
             if m:
                 for meth in m:
-                    if meth not in POLLING_METHODS:
-                        log(f"📡 捕获Livewire方法: {meth}")
-                        return meth
-
-            # 找 serverMemo.data.methods
-            mm = re.findall(r'"methods"\s*:\s*\[(.*?)\]', text, re.DOTALL)
-            if mm:
-                for chunk in mm:
-                    found = re.findall(r'"([^"]+)"', chunk)
-                    for meth in found:
-                        if meth not in POLLING_METHODS:
-                            log(f"📡 捕获Livewire方法: {meth}")
-                            return meth
-
-    except Exception as e:
-        log(f"Livewire分析失败: {e}")
-
-    return None
+                    if meth not in POLLING_METHODS: return meth
+        return None
+    except Exception: return None
 
 
-def call_livewire_directly(sb, component_id, method_name):
-    """通过 Livewire API 直接调用后端方法"""
+def find_component_id_by_selector(sb, selector):
+    """根据选择器寻找 wire:id"""
     try:
-        result = sb.execute_script(f"""
-        if(window.Livewire){{
-            try {{
-                var comp = window.Livewire.find('{component_id}');
-                if(comp){{
-                    comp.call('{method_name}');
-                    return 'called';
-                }}
-                return 'no-comp';
-            }} catch(e) {{
-                return 'err:' + e.message;
-            }}
-        }}
-        return 'no-lw';
+        return sb.execute_script(f"""
+            let el=document.querySelector('{selector}');
+            if(!el) return null;
+            let comp=el.closest('[wire\\\\:id]');
+            return comp?comp.getAttribute('wire:id'):null;
         """)
-        log(f"🎯 Livewire直接调用结果: {result}")
-        return result
-    except Exception as e:
-        log(f"⚠️ Livewire直接调用失败: {e}")
-        return None
+    except Exception: return None
 
 
-def find_component_id_by_selector(sb, css_selector):
-    """通过CSS选择器找到元素的 wire:id"""
+def call_livewire_directly(sb, component_id, method):
+    """【Pro v8】直接调用 Livewire 組件方法"""
     try:
-        elem = sb.find_element(By.CSS_SELECTOR, css_selector, timeout=5)
-        wire_id = sb.execute_script("""
-            var el = arguments[0];
-            while(el && !el.getAttribute('wire:id')) {
-                el = el.parentElement;
-            }
-            return el ? el.getAttribute('wire:id') : null;
-        """, elem)
-        log(f"🔗 找到组件ID: {wire_id}")
-        return wire_id
-    except Exception as e:
-        log(f"⚠️ 查找组件ID失败: {e}")
-        return None
-
-
-def is_driver_alive(sb):
-    """【新增】检测浏览器是否仍然正常运行 - 使用更宽松的检测方式"""
-    try:
-        url = sb.driver.current_url
-        if url: return True
-    except Exception: pass
-    try:
-        title = sb.driver.title
+        log(f"🚀 尝试直接调用 Livewire: component={component_id}, method={method}")
+        res = sb.execute_script(f"""
+            if(window.Livewire){{
+                let comp=Livewire.find('{component_id}');
+                if(comp){{
+                    comp.call('{method}');
+                    return 'called-via-find';
+                }}
+                let comps=Livewire.all();
+                for(let c of comps){{
+                    if(c.id==='{component_id}'){{
+                        c.call('{method}');
+                        return 'called-via-all';
+                    }}
+                }}
+            }}
+            return 'no-livewire';
+        """)
+        log(f"🎯 直接调用结果: {res}")
         return True
-    except Exception: pass
-    try:
-        sb.driver.execute_script("return 1")
-        return True
-    except Exception:
+    except Exception as e:
+        log(f"⚠️ 直接调用失败: {e}")
         return False
 
 
+# ================================================================
+# 主程序逻辑
+# ==================== 主程序逻辑 ====================
+
 def main():
-    """主函数: 遍历所有账号执行续期"""
     if not ACCOUNTS:
-        log("❌ 未配置 GAME4FREE_ACCOUNT 环境变量，请在仓库 Settings → Secrets 中添加"); return
+        log("❌ 未配置任何账号，请检查环境变量 GAME4FREE_ACCOUNT")
+        return
 
-    # Chrome 稳定性参数 (Pro优化)
-    chrome_args = (
-        "--no-sandbox,"
-        "--disable-dev-shm-usage,"
-        "--disable-gpu,"
-        "--disable-gpu-sandbox,"
-        "--disable-gpu-compositing,"
-        "--disable-extensions,"
-        "--disable-notifications,"
-        "--disable-infobars,"
-        "--no-first-run,"
-        "--disable-default-apps,"
-        "--disable-logging,"
-        "--disable-sync,"
-        "--disable-translate,"
-        "--disable-background-networking,"
-        "--disable-background-timer-throttling,"
-        "--disable-renderer-backgrounding,"
-        "--disable-backgrounding-occluded-windows,"
-        "--disable-hang-monitor,"
-        "--disable-popup-blocking,"
-        "--disable-component-update,"
-        "--disable-session-crashed-bubble,"
-        "--disable-accelerated-compositing,"
-        "--disable-accelerated-2d-canvas,"
-        "--disable-accelerated-video-decode,"
-        "--disable-accelerated-mjpeg-decode,"
-        "--disable-blink-features=AutomationControlled,"
-        "--window-size=1920,1080,"
-        "--start-maximized"
-    )
-
-    # 浏览器崩溃恢复机制
     max_browser_retries = 3
     browser_retry_delay = 10
+
+    # 预先清理可能的旧截图
+    if os.path.exists(SCREENSHOT_DIR):
+        try:
+            import shutil
+            shutil.rmtree(SCREENSHOT_DIR)
+            log("🧹 已清理旧的调试截图目录")
+        except: pass
+
+    # 浏览器启动参数
+    chrome_args = [
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--window-size=1920,1080",
+        "--disable-blink-features=AutomationControlled",
+        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ]
 
     for server_name, server_url in ACCOUNTS:
         log(f"\n========== 开始处理服务器账号: {server_name} ==========")
@@ -646,7 +504,7 @@ def main():
 
                 with SB(
                     test=True,
-                    uc=False,
+                    uc=True,
                     headless=False,
                     proxy=os.environ.get("PROXY_SERVER") if os.environ.get("IS_PROXY") == "true" else None,
                     block_images=True,
@@ -666,207 +524,106 @@ def main():
                     time.sleep(3)
 
                     # 验证浏览器是否存活
-                    if not is_driver_alive(sb):
-                        log("❌ 浏览器在打开页面后意外停止响应")
-                        raise RuntimeError("浏览器启动后意外停止，请检查资源是否充足")
-
-                    # 验证页面是否加载成功
                     try:
-                        title = sb.execute_script("return document.title || '';")
+                        title = sb.get_title()
                         log(f"📄 当前页面标题: {title}")
-                        if title: log("✅ 页面加载成功")
+                        log("✅ 页面加载成功")
                     except Exception as e:
-                        log(f"⚠️ 无法读取页面标题: {e}")
+                        log(f"❌ 浏览器连接丢失: {e}")
+                        raise RuntimeError("浏览器启动后立即失效")
 
                     # 注入 Cookie
                     if GF_COOKIE:
                         log("🍪 正在注入浏览器 Cookie 凭证...")
                         try:
-                            for cookie in GF_COOKIE.split(";"):
-                                if "=" in cookie:
-                                    name, value = cookie.split("=", 1)
-                                    cookie_dict = {"name": name.strip(), "value": value.strip(), "domain": ".gaming4free.net"}
-                                    sb.driver.add_cookie(cookie_dict)
-                            sb.open(server_url, timeout=30)
-                            time.sleep(3)
+                            # 尝试解析多个 Cookie (格式: name1=val1; name2=val2)
+                            cookies = GF_COOKIE.split(';')
+                            for c in cookies:
+                                c = c.strip()
+                                if '=' in c:
+                                    name, value = c.split('=', 1)
+                                    sb.add_cookie({'name': name, 'value': value, 'domain': '.gaming4free.net'})
                             log("✅ Cookie 凭证注入完成")
-                            # 【关键】Cookie 注入后等待足够时间让 Livewire/Alpine 完全渲染
-                            log("⏳ 等待 Livewire/Alpine 组件完全挂载...")
-                            for wi2 in range(10):
-                                try:
-                                    body_text = sb.execute_script("return document.body?document.body.innerText:'';");
-                                    if body_text and ('90' in body_text or 'extend' in body_text.lower()):
-                                        log(f"✅ 组件已挂载 ({wi2+1}秒)")
-                                        break
-                                except Exception: pass
-                                time.sleep(1)
+                            sb.refresh()
+                            time.sleep(5)
                         except Exception as e:
                             log(f"⚠️ Cookie 注入失败: {e}")
 
-                    # === Pro v8: 拦截 Livewire 请求 ===
+                    # 启用网络监听
                     setup_livewire_listener(sb)
-                    time.sleep(3)
 
-                    handle_turnstile(sb)
-
-                    # 再次验证浏览器存活
-                    if not is_driver_alive(sb):
-                        raise RuntimeError("浏览器在处理人机验证后意外停止")
+                    log("⏳ 等待 Livewire/Alpine 组件完全挂载...")
+                    for _ in range(10):
+                        has_lw = sb.execute_script("return !!window.Livewire;")
+                        if has_lw: break
+                        time.sleep(1)
+                    log(f"✅ 组件已挂载 ({_ + 1}秒)")
 
                     log(f"🔑 准备执行账号操作: {server_name}")
 
-                    # 【关键修复】等待 Livewire/Alpine 组件完全渲染
+                    # 等待续期按钮出现
                     log("⏳ 等待页面组件完全加载 (最多15秒)...")
-                    rendered = False
-                    for i in range(15):
-                        try:
-                            page_text = sb.execute_script("return document.body?document.body.innerText:'';")
-                            if '+90' in page_text or 'watch ad' in page_text.lower():
-                                rendered = True
-                                log(f"✅ 续期按钮已渲染 (耗时{i+1}秒)")
-                                break
-                        except Exception: pass
-                        time.sleep(1)
-
-                    if not rendered:
+                    try:
+                        sb.wait_for_element('button.rt-btn-free', timeout=15)
+                    except:
                         log("⚠️ 超时未检测到续期按钮，尝试向下滚动触发懒加载...")
+                        sb.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
+                        time.sleep(3)
                         sb.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                        time.sleep(2)
-                        sb.execute_script("window.scrollTo(0, 0);")
                         time.sleep(2)
 
                     screenshot(sb, "before-login")
+
+                    # 获取当前时间
                     before_text, before_secs = get_remaining_time(sb)
                     log(f"⏱️ 续期前剩余时长: {before_text} ({before_secs}秒)")
 
-                    btn_info = check_button_cooldown(sb)
-                    if btn_info and btn_info.get('cooldown'):
-                        log(f"⏳ 续期按钮冷却中: {btn_info.get('text')}")
-                        send_tg("按钮冷却中", server_name, before_text)
-                        continue
-                    # =============================================
-                    # 🖱️ Pro v10: Livewire HTTP API + 深度诊断
-                    # =============================================
-                    log("🖱️ 正在寻找并点击 +90 分钟续期按钮...")
+                    # 检查是否需要续期
+                    if before_secs > TARGET_SECONDS:
+                        log(f"✅ 剩余时间充足 ({before_text} > 48h)，跳过续期")
+                        send_tg("✅ 时间充足", server_name, before_text)
+                        account_finished = True
+                        break
 
+                    # 检查按钮冷却
+                    cooldown_info = check_button_cooldown(sb)
+                    if cooldown_info and cooldown_info.get('cooldown'):
+                        rem = cooldown_info.get('remaining', '?')
+                        log(f"⏳ 续期按钮处于冷却中，剩余 {rem} 秒，跳过此轮")
+                        send_tg(f"⏳ 冷却中 ({rem}s)", server_name, before_text)
+                        account_finished = True
+                        break
+
+                    # 开始续期操作
+                    log("🖱️ 正在寻找并点击 +90 分钟续期按钮...")
                     click_done = False
 
-                    # === Step 1: 深度诊断 — 找 wire:id + snapshot HTML ===
-                    try:
-                        log("🔍 Pro v10: 深度诊断...")
+                    # === Step 1: Pro v10 深度诊断 ===
+                    log("🔍 Pro v10: 深度诊断...")
+                    diag = sb.execute_script("""
+                        (function(){
+                            var btn = document.querySelector('button.rt-btn-free');
+                            if(!btn) return 'not-found';
+                            var rect = btn.getBoundingClientRect();
+                            return {
+                                text: btn.innerText,
+                                visible: (btn.offsetParent !== null),
+                                disabled: btn.disabled,
+                                rect: rect
+                            };
+                        })()
+                    """)
+                    log(f"   🔬 诊断结果: {diag}")
+                    screenshot(sb, "button-diagnosis-v10")
 
-                        diag_result = sb.execute_script("""
-                            (function() {
-                                var btns = document.querySelectorAll('button');
-                                for (var i = 0; i < btns.length; i++) {
-                                    var txt = (btns[i].textContent || '').trim();
-                                    if ((txt.includes('+90') || txt.includes('90 min')) && btns[i].offsetParent !== null) {
-                                        var comp = btns[i];
-                                        while (comp && !comp.getAttribute('wire:id')) {
-                                            comp = comp.parentElement;
-                                        }
-
-                                        var info = {
-                                            found: true, text: txt, className: btns[i].className,
-                                            disabled: btns[i].disabled, rect: btns[i].getBoundingClientRect ? JSON.stringify(btns[i].getBoundingClientRect()) : null,
-                                            parentTag: btns[i].parentElement ? btns[i].parentElement.tagName : '',
-                                            parentCls: btns[i].parentElement ? btns[i].parentElement.className : ''
-                                        };
-
-                                        if (comp) {
-                                            info.wireId = comp.getAttribute('wire:id');
-                                            info.componentAttrs = [];
-                                            for (var attr of comp.attributes) {
-                                                info.componentAttrs.push(attr.name + '=' + attr.value.substring(0,200));
-                                            }
-                                            info.hasSubmitHandler = !!comp.getAttribute('wire:submit');
-                                            info.submitMethod = comp.getAttribute('wire:submit');
-                                        }
-
-                                        if (window.Livewire) {
-                                            var comps = window.Livewire.all();
-                                            info.totalComponents = comps.length;
-                                            for (var c = 0; c < comps.length; c++) {
-                                                try {
-                                                    var snap = comps[c].snapshot;
-                                                    if (snap && snap.html && snap.html.indexOf(txt) !== -1) {
-                                                        info.matchingComponentIndex = c;
-                                                        info.matchingComponentId = comps[c].id;
-                                                        if (snap.serverMemo && snap.serverMemo.data) {
-                                                            var memo = snap.serverMemo.data;
-                                                            if (memo.effects) info.effects = JSON.stringify(memo.effects);
-                                                            if (memo.preloadAssets) {
-                                                                for (var p of memo.preloadAssets) {
-                                                                    if (p.url && p.url.indexOf('livewire') !== -1) info.livewireScriptUrl = p.url;
-                                                                }
-                                                            }
-                                                        }
-                                                        var idx = snap.html.indexOf(txt);
-                                                        if (idx !== -1) {
-                                                            info.contextHtml = snap.html.substring(Math.max(0,idx-200), Math.min(snap.html.length, idx+500));
-                                                        }
-                                                    }
-                                                } catch(e) {}
-                                            }
-                                        }
-
-                                        return JSON.stringify(info);
-                                    }
-                                }
-                                return JSON.stringify({found: false});
-                            })();
-                        """)
-                        log(f"   🔬 诊断结果: {diag_result}")
-
-                        import json
-                        try:
-                            d = json.loads(diag_result)
-                            if d.get('matchingComponentId'): log(f"   ✅ 匹配组件ID: {d['matchingComponentId']}")
-                            if d.get('wireId'): log(f"   ✅ wire:id: {d['wireId']}")
-                            if d.get('effects'): log(f"   📡 Effects: {d['effects'][:200]}")
-                            if d.get('contextHtml'): log(f"   📄 Context: ...{d['contextHtml']}...")
-                            if d.get('rect'): log(f"   📐 按钮位置: {d['rect']}")
-                        except: pass
-
-                        screenshot(sb, "button-diagnosis-v10")
-
-                    except Exception as e:
-                        log(f"   ⚠️ 诊断失败: {e}")
-
-                    # === Step 2: 通过 Livewire HTTP API 调用 extend ===
+                    # === Step 2: Livewire HTTP API 直接调用 ===
                     try:
                         log("📍 策略1: Livewire HTTP API 直接调用 extend...")
-
-                        component_id = sb.execute_script("""
-                            if (!window.Livewire) return null;
-                            var btns = document.querySelectorAll('button');
-                            var searchText = null;
-                            for (var i = 0; i < btns.length; i++) {
-                                var txt = (btns[i].textContent || '').trim();
-                                if ((txt.includes('+90') || txt.includes('90 min')) && btns[i].offsetParent !== null) {
-                                    searchText = txt;
-                                    break;
-                                }
-                            }
-                            if (!searchText) return null;
-                            var comps = window.Livewire.all();
-                            for (var c = 0; c < comps.length; c++) {
-                                try {
-                                    var snap = comps[c].snapshot;
-                                    if (snap && snap.html && snap.html.indexOf(searchText) !== -1) {
-                                        return comps[c].id;
-                                    }
-                                } catch(e) {}
-                            }
-                            return null;
-                        """)
-
+                        component_id = find_component_id_by_selector(sb, 'button.rt-btn-free')
                         if component_id:
-                            log(f"   ✅ 找到组件ID: {component_id}")
-
                             result = sb.execute_script(f"""
                                 (function() {{
-                                    if (!window.Livewire) return 'no-livewire';
+                                    if (!window.Livewire) return 'no-lw';
                                     var comps = window.Livewire.all();
                                     var targetComp = null;
                                     for (var c = 0; c < comps.length; c++) {{
@@ -890,7 +647,7 @@ def main():
                                 click_done = True
                                 time.sleep(2)
 
-                                reqs = sb.execute_script("return (window.__reqs||[]).length;")
+                                reqs = sb.execute_script("return (window.__reqs || []).length;")
                                 log(f"   📡 Livewire requests captured: {reqs}")
 
                                 if reqs > 0:
@@ -1005,29 +762,23 @@ def main():
 
                     responded = False
                     turnstile_handled_count = 0
-                    turnstile_called_handle = False  # 避免重复调用 handle_turnstile
                     for wi in range(20):
                         time.sleep(1)
 
                         # 1. 优先检查并处理 Turnstile
                         if check_turnstile_present():
-                            # ★ 关键修复: 调用加强版 handle_turnstile (CDP 真实点击, isTrusted=true)
-                            # 而非用 dispatchEvent 合成事件 (isTrusted=false, Turnstile 会忽略)
-                            if not turnstile_called_handle:
-                                log(f"🛡️ [第 {wi+1} 秒] 检测到 Turnstile, 调用 handle_turnstile (CDP 真实点击)...")
-                                handle_turnstile(sb, max_retries=3)
-                                turnstile_called_handle = True
-                                turnstile_handled_count += 1
-                                continue
-                            else:
-                                # 已经调用过 handle_turnstile 但仍未通过, 每秒再用 xdotool 系统点击
-                                if turnstile_handled_count % 3 == 0:
-                                    log(f"🛡️ [第 {wi+1} 秒] Turnstile 仍在, 再次 xdotool 点击 (已处理 {turnstile_handled_count} 次)...")
-                                    screenshot(sb, f"turnstile-detected-{turnstile_handled_count}")
-
-                                # 直接用 xdotool 系统点击 (CDP isTrusted=false 无效)
+                            if turnstile_handled_count % 5 == 0:
+                                log(f"🛡️ [第 {wi+1} 秒] 实时检测到 Turnstile, 调用 handle_turnstile (UC 模式原生点击)...")
+                                screenshot(sb, f"turnstile-detected-{turnstile_handled_count}")
+                            
+                            try:
+                                # 优先使用 SeleniumBase 的原生 UC 验证码处理
+                                sb.uc_gui_click_captcha()
+                                time.sleep(2)
+                            except Exception as e:
+                                log(f"⚠️ UC 原生点击异常: {e}")
+                                # 兜底: 使用 xdotool 进行底层系统点击 (绕过 CDP 检测)
                                 try:
-                                    import subprocess
                                     cf_iframes = sb.find_elements('iframe[src*="challenges.cloudflare.com"]') or \
                                                  sb.find_elements('iframe[src*="cloudflare"]')
                                     if cf_iframes:
@@ -1041,19 +792,11 @@ def main():
                                             # 点击 checkbox 区域 (iframe 左侧 30px)
                                             click_x = int(rect['x'] + 30)
                                             click_y = int(rect['y'] + rect['h'] / 2)
-                                            subprocess.run(
-                                                ["xdotool", "mousemove", str(click_x), str(click_y)],
-                                                check=False, timeout=5, capture_output=True
-                                            )
+                                            subprocess.run(["xdotool", "mousemove", str(click_x), str(click_y)], check=False)
                                             time.sleep(0.2)
-                                            subprocess.run(
-                                                ["xdotool", "click", "1"],
-                                                check=False, timeout=5, capture_output=True
-                                            )
-                                except Exception as e:
-                                    if turnstile_handled_count % 5 == 0:
-                                        log(f"⚠️ xdotool 点击异常: {e}")
-
+                                            subprocess.run(["xdotool", "click", "1"], check=False)
+                                except Exception: pass
+                            
                             turnstile_handled_count += 1
                             continue
 
@@ -1069,7 +812,7 @@ def main():
 
                     if not responded:
                         log("ℹ️ 页面在 20 秒内未检测到时间显著变化")
-                    
+
                     screenshot(sb, "after-click-status-check")
 
                     # === Pro v8: 点击后主动调用 Livewire ===
@@ -1115,7 +858,7 @@ def main():
                             recover_page(sb, server_url)
                             time.sleep(5)
                             continue  # 重新执行内部 browser_attempt 流程
-                
+
                 # 如果账号处理完成，跳出浏览器重试循环
                 if account_finished:
                     break
@@ -1274,39 +1017,13 @@ def wait_ad_flow(sb, before_secs, max_wait=AD_WAIT_SEC):
                     break
 
             # 再等 30 秒让系统完成续期
-            log("⏳ 等待续期生效 (30秒)...")
+            log("⏳ 等待续期最终处理...")
             time.sleep(30)
+            break
 
-            # 检查最终结果
-            lt, ls = get_remaining_time(sb)
-            if ls > before_secs + 3000:  # 增加了至少 50 分钟
-                log(f"🎉 续期成功！新时间: {lt} ({ls//3600}小时{ls%3600//60}分)")
-                result['live_text'], result['live_secs'] = lt, ls
-            else:
-                log(f"⚠️ 续期可能失败。当前时间: {lt} ({ls//3600}小时{ls%3600//60}分)，期望增加3000秒以上")
-                result['live_text'], result['live_secs'] = lt, ls
+        time.sleep(2)
 
-            continue
-
-        # 定期检查剩余时间变化
-        if int(time.time() - t0) % 10 == 0 and time.time() - t0 > 5:
-            try:
-                lt, ls = get_remaining_time(sb)
-                if ls > before_secs + 60:
-                    log(f"🎉 [{int(time.time()-t0)}秒] 页面时间已自动更新: {lt}")
-                    result['live_text'], result['live_secs'] = lt, ls
-                    break
-            except Exception as e:
-                log(f"⚠️ 实时时间检查失败: {e}")
-
-        time.sleep(1)
-
-    # 【关键修复】确保函数总有返回值
-    if not result['live_text']:
-        lt, ls = get_remaining_time(sb)
-        result['live_text'], result['live_secs'] = lt, ls
-
-    return result['live_text'], result
+    return result.get('live_text', ''), result
 
 
 if __name__ == "__main__":
