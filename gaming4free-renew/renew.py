@@ -178,7 +178,7 @@ def close_modals(sb):
         sels = ['button:contains("Maybe later")', '.modal-close', '[aria-label="Close"]']
         for sel in sels:
             try:
-                if sb.execute_script(f"(function(){{ return !!document.querySelector('{sel}'); }})()"):
+                if sb.execute_script("return !!document.querySelector(arguments[0]);", sel):
                     sb.click(sel); log(f"🛡️ 已关闭弹窗: {sel}"); time.sleep(1)
             except Exception as e: log(f"⚠️ 关闭弹窗 ({sel}) 失败: {e}")
     except Exception as e: log(f"⚠️ 关闭弹窗总失败: {e}")
@@ -559,14 +559,15 @@ def analyze_livewire(sb):
 def find_component_id_by_selector(sb, selector):
     """根据选择器寻找 wire:id"""
     try:
-        return sb.execute_script(f"""
-            return (function() {
-                let el=document.querySelector(\'{selector}\');
-                if(!el) return null;
-                let comp=el.closest(\'[wire\\\\:id]\');
-                return comp?comp.getAttribute(\'wire:id\'):null;
-            })();
-        """)
+        return sb.execute_script(
+            "return (function() { " +
+            "let el=document.querySelector(arguments[0]); " +
+            "if(!el) return null; " +
+            "let comp=el.closest('[wire\\:id]'); " +
+            "return comp?comp.getAttribute('wire:id'):null; " +
+            "})();"
+            , selector
+        )
     except Exception: return None
 
 
@@ -764,26 +765,26 @@ def main():
                         log("📍 策略1: Livewire HTTP API 直接调用 extend...")
                         component_id = find_component_id_by_selector(sb, 'button.rt-btn-free')
                         if component_id:
-                            result = sb.execute_script(f"""
-                                (function() {
+                            result = sb.execute_script("""
+                                (function() {{
                                     if (!window.Livewire) return 'no-lw';
                                     var comps = window.Livewire.all();
                                     var targetComp = null;
-                                    for (var c = 0; c < comps.length; c++) {
-                                        if (comps[c].id === '{component_id}') {
+                                    for (var c = 0; c < comps.length; c++) {{
+                                        if (comps[c].id === '{component_id}') {{
                                             targetComp = comps[c];
                                             break;
-                                        }
-                                    }
+                                        }}
+                                    }}
                                     if (!targetComp) return 'no-target-component';
-                                    try {
+                                    try {{
                                         targetComp.call('extend');
                                         return 'called-via-call';
-                                    } catch(e) {
+                                    }} catch(e) {{
                                         return 'call-failed:' + e.message;
-                                    }
-                                })();
-                            """)
+                                    }}
+                                }})();
+                            """).format(component_id)
                             log(f"   🎯 Livewire call 结果: {result}")
 
                             if 'called' in str(result):
@@ -973,16 +974,16 @@ def main():
                             call_livewire_directly(sb, comp_id, method)
                         else:
                             # 通用调用
-                            sb.execute_script(f"""
-                                if(window.Livewire){
+                            sb.execute_script("""
+                                if(window.Livewire){{
                                     let comps=Livewire.all();
-                                    if(comps.length>0){
+                                    if(comps.length>0){{
                                         comps[0].call("{method}");
                                         return "called";
-                                    }
-                                }
+                                    }}
+                                }}
                                 return "no";
-                            """)
+                            """).format(method)
 
                     # === 进入广告观看流程 ===
                     live_text, res = wait_ad_flow(sb, before_secs, AD_WAIT_SEC)
