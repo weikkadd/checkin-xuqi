@@ -145,7 +145,7 @@ def get_remaining_time(sb):
         ]
         for sel in css_selectors:
             try:
-                text = sb.execute_script(f"(function(){{ var el=document.querySelector('{sel}'); return el?el.textContent.trim():''; }})()"))
+                text = sb.execute_script(f"(function(){{ var el=document.querySelector('{sel}'); return el?el.textContent.trim():''; }})()")
                 if text and len(text) < 50:
                     secs = parse_countdown_seconds(text)
                     if secs > 0: return text, secs
