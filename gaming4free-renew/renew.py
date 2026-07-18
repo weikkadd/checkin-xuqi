@@ -800,16 +800,19 @@ def main():
                     log("⏳ 正在监控页面响应与 Turnstile 验证碼 (最多 20 秒)...")
 
                     def check_turnstile_present():
-                        return bool(sb.execute_script("""
-                            return (function() {
-                                return !!document.querySelector('iframe[src*="challenges.cloudflare.com"]')
-                                    || !!document.querySelector('.cf-turnstile')
-                                    || !!document.querySelector('[class*="turnstile-"]')
-                                    || !!document.querySelector('[data-testid="turnstile-widget"]')
-                                    || !!document.querySelector('[aria-label="Security verification"]')
-                                    || (document.body && document.body.innerText.includes("Verify you're human"));
-                            })();
-                        """))
+                        try:
+                            return bool(sb.execute_script("""
+                                return (function() {
+                                    return !!document.querySelector('iframe[src*="challenges.cloudflare.com"]')
+                                        || !!document.querySelector('.cf-turnstile')
+                                        || !!document.querySelector('[class*="turnstile-"]')
+                                        || !!document.querySelector('[data-testid="turnstile-widget"]')
+                                        || !!document.querySelector('[aria-label="Security verification"]')
+                                        || (document.body && document.body.innerText.includes("Verify you're human"));
+                                })();
+                            """))
+                        except Exception:
+                            return False
 
                     responded = False
                     turnstile_handled_count = 0
