@@ -244,9 +244,10 @@ def detect_ad(sb):
         for (var i = 0; i < vids.length; i++) { if (vids[i].offsetParent !== null) return 'video'; }
         var ifs = document.querySelectorAll('iframe');
         for (var j = 0; j < ifs.length; j++) {
-            var s = ((ifs[j].src || '') + ' ' + (ifs[j].id || '') + ' ' + (ifs[j].name || ''));
+            var s = ((ifs[j].src || "") + " " + (ifs[j].id || "") + " " + (ifs[j].name || ""));
             if (/ads|doubleclick|reward/i.test(s) && ifs[j].offsetParent !== null) return 'iframe';
         }
+        if (document.body && document.body.innerText.includes('seconds until reward')) return 'text_reward_timer';
         return '';
     })();
     """
@@ -255,14 +256,53 @@ def detect_ad(sb):
 
 def try_ad_controls(sb, ad_elapsed):
     """尝试关闭广告控制元素"""
-    if ad_elapsed > 20:
-        try:
+    # 增加对 "seconds until reward" 计时器和关闭按钮的检测
+    try:
+        # 检查是否有 "seconds until reward" 文本
+        reward_timer_text = sb.execute_script("""
+            return (function() {
+                let el = document.querySelector('div:has(> span:not([class*="hidden"]) + span:not([class*="hidden"]) + span:not([class*="hidden"]))');
+                if (el && el.innerText.includes('seconds until reward')) {
+                    return el.innerText;
+                }
+                return '';
+            })();
+        """)
+        if reward_timer_text:
+            log(f"⏱️ 检测到广告计时器: {reward_timer_text}")
+            # 提取秒数
+            match = re.search(r'(\d+)\s*seconds until reward', reward_timer_text)
+            if match:
+                remaining_seconds = int(match.group(1))
+                if remaining_seconds <= 1: # 接近0秒时，尝试点击关闭按钮
+                    log("🎯 广告即将结束，尝试点击关闭按钮...")
+                    # 尝试点击 X 按钮 (截图中的样式)
+                    try:
+                        sb.execute_script("""
+                            return (function() {
+                                let closeBtn = document.querySelector('div:has(> span:not([class*="hidden"]) + span:not([class*="hidden"]) + span:not([class*="hidden"])) > button');
+                                if (closeBtn && closeBtn.innerText.includes('X')) {
+                                    closeBtn.click();
+                                    return true;
+                                }
+                                return false;
+                            })();
+                        """)
+                        log("✅ 成功点击广告关闭按钮 (X)")
+                        return True
+                    except Exception as e:
+                        log(f"⚠️ 点击广告关闭按钮 (X) 失败: {e}")
+
+        # 原有的关闭广告控制元素逻辑
+        if ad_elapsed > 20:
             sb.execute_script("""
             var els = document.querySelectorAll('[aria-label="Close"], [class*="modal"] button');
             for (var i = 0; i < els.length; i++) { if(els[i].offsetParent !== null) { els[i].click(); break; } }
             """)
             log("尝试关闭广告控制元素")
-        except Exception as e: log(f"⚠️ 尝试关闭广告控制失败: {e}")
+            return True
+    except Exception as e: log(f"⚠️ 尝试关闭广告控制失败: {e}")
+    return False
 
 
 # ================================================================
