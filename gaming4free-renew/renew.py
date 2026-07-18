@@ -65,21 +65,11 @@ def send_tg(result, server_name="", expiry=""):
     """【Pro】发送 Telegram 续期结果通知 - 详细格式"""
     if not TG_TOKEN or not TG_CHAT_ID: return
     msg = f"""🎮 Gaming4Free Pro
-
-🖥服务器:
-{server_name}
-
-⏰时间:
-{now_str()}
-
-📊状态:
-{result}
-
-⏱剩余:
-{expiry}
-
-⚙️模式:
-Renew-Pro v8
+🖥服务器: {server_name}
+⏰时间: {now_str()}
+📊状态: {result}
+⏱剩余: {expiry}
+⚙️模式: Renew-Pro v10
 """
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
     data = urllib.parse.urlencode({"chat_id": TG_CHAT_ID, "text": msg}).encode()
