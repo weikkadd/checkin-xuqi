@@ -446,21 +446,21 @@ def call_livewire_directly(sb, component_id, method):
     try:
         log(f"🚀 尝试直接调用 Livewire: component={component_id}, method={method}")
         js_script = """
-            return (function() {{
-                if(window.Livewire){{
+            return (function() {
+                if(window.Livewire){
                     let comp=Livewire.find('{component_id_placeholder}');
-                    if(comp){{
+                    if(comp){
                         comp.call('{method_placeholder}');
                         return 'called-via-find';
-                    }}
+                    }
                     let comps=Livewire.all();
-                    for(let c of comps){{
-                        if(c.id==='{component_id_placeholder}'){{
+                    for(let c of comps){
+                        if(c.id==='{component_id_placeholder}'){
                             c.call('{method_placeholder}');
                             return 'called-via-all';
-                        }}
-                    }}
-                }}
+                        }
+                    }
+                }
                 return 'no-livewire';
             }})();
         """.format(component_id_placeholder=component_id, method_placeholder=method)
