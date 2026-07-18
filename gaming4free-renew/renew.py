@@ -246,7 +246,9 @@ def check_button_cooldown(sb):
     })();
     """
     try: return sb.execute_script(js)
-    except Exception as e: log(f"⚠️ 检查按钮冷却失败: {e}"); return Nonedef handle_turnstile(sb, max_retries=3):
+    except Exception as e: log(f"⚠️ 检查按钮冷却失败: {e}"); return None
+
+def handle_turnstile(sb, max_retries=3):
     """处理 Cloudflare Turnstile 人机验证 (Pro增强版)"""
     for attempt in range(max_retries):
         try:
