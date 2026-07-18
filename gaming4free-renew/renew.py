@@ -718,9 +718,10 @@ def main():
                     log(f"⏱️ 续期前剩余时长: {before_text} ({before_secs}秒)")
                     # 诊断：获取页面完整文本
                     page_text = sb.execute_script("(function(){ return document.body?document.body.innerText:''; })()")
-                    time_matches = re.findall(r'(\d{1,2}:\d{2}:\d{2})', page_text)
-                    if time_matches:
-                        log(f"🔍 页面中发现的时间: {time_matches[:3]}")
+                    if page_text:
+                        time_matches = re.findall(r'(\d{1,2}:\d{2}:\d{2})', page_text)
+                        if time_matches:
+                            log(f"🔍 页面中发现的时间: {time_matches[:3]}")
 
                     # 检查是否需要续期
                     if before_secs > TARGET_SECONDS:
