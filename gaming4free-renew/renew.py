@@ -950,7 +950,7 @@ def main():
 
                     # === Pro v10 增强: 实时监控页面响应与验证码 ===
                     log("⏳ 正在监控页面响应与 Turnstile 验证碼 (最多 20 秒)...")
-                    
+
                     def check_turnstile_present():
                         return bool(sb.execute_script("""
                             return !!document.querySelector('iframe[src*="challenges.cloudflare.com"]')
@@ -963,57 +963,58 @@ def main():
 
                     responded = False
                     turnstile_handled_count = 0
+                    turnstile_called_handle = False  # 避免重复调用 handle_turnstile
                     for wi in range(20):
                         time.sleep(1)
-                        
+
                         # 1. 优先检查并处理 Turnstile
                         if check_turnstile_present():
-                            # 减少重复日志和截图，每 5 秒记录一次
-                            if turnstile_handled_count % 5 == 0:
-                                log(f"🛡️ [第 {wi+1} 秒] 实时检测到 Turnstile，正在处理 (已处理 {turnstile_handled_count} 次)...")
-                                screenshot(sb, f"turnstile-detected-{turnstile_handled_count}")
-                            
-                            sb.execute_script("""
-                                (function() {
-                                    // 1. 尝试通过坐标点击 iframe 中心 (最强暴力点击)
-                                    var cf_iframe = document.querySelector('iframe[src*="challenges.cloudflare.com"]');
-                                    if (cf_iframe) {
-                                        var rect = cf_iframe.getBoundingClientRect();
-                                        if (rect.width > 0 && rect.height > 0) {
-                                            var x = rect.left + rect.width / 2;
-                                            var y = rect.top + rect.height / 2;
-                                            var el = document.elementFromPoint(x, y) || cf_iframe;
-                                            ['mousedown', 'mouseup', 'click'].forEach(type => {
-                                                el.dispatchEvent(new MouseEvent(type, {
-                                                    bubbles: true, cancelable: true, view: window,
-                                                    clientX: x, clientY: y
-                                                }));
-                                            });
-                                            console.log('Force clicked Turnstile center');
-                                        }
-                                    }
+                            # ★ 关键修复: 调用加强版 handle_turnstile (CDP 真实点击, isTrusted=true)
+                            # 而非用 dispatchEvent 合成事件 (isTrusted=false, Turnstile 会忽略)
+                            if not turnstile_called_handle:
+                                log(f"🛡️ [第 {wi+1} 秒] 检测到 Turnstile, 调用 handle_turnstile (CDP 真实点击)...")
+                                handle_turnstile(sb, max_retries=3)
+                                turnstile_called_handle = True
+                                turnstile_handled_count += 1
+                                continue
+                            else:
+                                # 已经调用过 handle_turnstile 但仍未通过, 每秒再尝试一次 CDP 点击
+                                if turnstile_handled_count % 3 == 0:
+                                    log(f"🛡️ [第 {wi+1} 秒] Turnstile 仍在, 再次尝试 CDP 点击 (已处理 {turnstile_handled_count} 次)...")
+                                    screenshot(sb, f"turnstile-detected-{turnstile_handled_count}")
 
-                                    // 2. 尝试点击内部 checkbox 元素
-                                    var turnstiles = document.querySelectorAll('.cf-turnstile > div');
-                                    for (var t = 0; t < turnstiles.length; t++) {
-                                        var boxes = turnstiles[t].querySelectorAll('span[role="checkbox"]');
-                                        if (boxes.length > 0) { 
-                                            boxes[0].click(); 
-                                            console.log('Clicked Turnstile checkbox span');
-                                            break; 
-                                        }
-                                    }
+                                # 直接 CDP 点击 Turnstile iframe 中心 (不依赖 handle_turnstile 函数)
+                                try:
+                                    cf_iframes = sb.find_elements('iframe[src*="challenges.cloudflare.com"]') or \
+                                                 sb.find_elements('iframe[src*="cloudflare"]')
+                                    if cf_iframes:
+                                        iframe = cf_iframes[0]
+                                        rect = sb.execute_script(
+                                            "(function() { var el = arguments[0]; var r = el.getBoundingClientRect(); "
+                                            "return {x: r.x, y: r.y, w: r.width, h: r.height}; })();",
+                                            iframe
+                                        )
+                                        if rect and rect.get('w', 0) > 0:
+                                            # 点击 checkbox 区域 (iframe 左侧 30px)
+                                            click_x = int(rect['x'] + 30)
+                                            click_y = int(rect['y'] + rect['h'] / 2)
+                                            sb.driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
+                                                "type": "mouseMoved", "x": click_x, "y": click_y,
+                                            })
+                                            time.sleep(0.2)
+                                            sb.driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
+                                                "type": "mousePressed", "x": click_x, "y": click_y,
+                                                "button": "left", "clickCount": 1,
+                                            })
+                                            time.sleep(0.1)
+                                            sb.driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
+                                                "type": "mouseReleased", "x": click_x, "y": click_y,
+                                                "button": "left", "clickCount": 1,
+                                            })
+                                except Exception as e:
+                                    if turnstile_handled_count % 5 == 0:
+                                        log(f"⚠️ CDP 点击异常: {e}")
 
-                                    // 3. 兜底点击容器
-                                    if (turnstiles.length > 0) { 
-                                        turnstiles[0].click(); 
-                                        console.log('Clicked Turnstile container div');
-                                    }
-                                    
-                                    // 4. 如果以上都失败，尝试直接点击 iframe 元素
-                                    if (cf_iframe) cf_iframe.click();
-                                })();
-                            """)
                             turnstile_handled_count += 1
                             continue
 
@@ -1026,7 +1027,7 @@ def main():
                                 log(f"✅ 页面已响应！新时间: {match_new.group(0)}")
                                 responded = True
                                 break
-                    
+
                     if not responded:
                         log("ℹ️ 页面在 20 秒内未检测到时间显著变化")
                     
