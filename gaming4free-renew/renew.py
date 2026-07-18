@@ -145,7 +145,7 @@ def get_remaining_time(sb):
         ]
         for sel in css_selectors:
             try:
-                text = sb.execute_script(f"(function(){ var el=document.querySelector('{sel}'); return el?el.textContent.trim():''; })()")
+                text = sb.execute_script(f"(function(){{ var el=document.querySelector('{sel}'); return el?el.textContent.trim():''; }})()"))
                 if text and len(text) < 50:
                     secs = parse_countdown_seconds(text)
                     if secs > 0: return text, secs
@@ -178,7 +178,7 @@ def close_modals(sb):
         sels = ['button:contains("Maybe later")', '.modal-close', '[aria-label="Close"]']
         for sel in sels:
             try:
-                if sb.execute_script(f"(function(){ return !!document.querySelector('{sel}'); })()"):
+                if sb.execute_script(f"(function(){{ return !!document.querySelector('{sel}'); }})()"):
                     sb.click(sel); log(f"🛡️ 已关闭弹窗: {sel}"); time.sleep(1)
             except Exception as e: log(f"⚠️ 关闭弹窗 ({sel}) 失败: {e}")
     except Exception as e: log(f"⚠️ 关闭弹窗总失败: {e}")
