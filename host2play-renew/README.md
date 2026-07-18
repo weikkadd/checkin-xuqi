@@ -1,4 +1,4 @@
-# host2play 自动续期（GHA + WARP + reCAPTCHA 音频识别）
+# host2play 自动续期（GHA + WARP + reCAPTCHA 音频识别）https://host2play.gratis/
 
 > 利用 GitHub Actions + Cloudflare WARP + DrissionPage + reCAPTCHA 音频识别自动续期 host2play 服务器。
 
