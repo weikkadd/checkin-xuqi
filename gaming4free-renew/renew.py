@@ -118,7 +118,7 @@ def get_remaining_time(sb):
                     secs = parse_countdown_seconds(text)
                     if secs > 0: return text, secs
             except Exception as e: log(f"⚠️ 获取剩余时间 (选择器: {sel}) 失败: {e}")
-        page_text = sb.execute_script("return document.body?document.body.innerText:'';")
+        page_text = sb.execute_script("(function(){ return document.body?document.body.innerText:''; })()")
         if page_text:
             match = re.search(r'(\d{1,2}:\d{2}:\d{2})', page_text)
             if match: return match.group(1), parse_countdown_seconds(match.group(1))
@@ -292,7 +292,7 @@ def verify_extend_success(sb, before_secs):
                 return True, text
 
             # 检查Livewire活动
-            req = sb.execute_script("return window.__reqs || [];")
+            req = sb.execute_script("(function(){ return window.__reqs || []; })()")
             if req:
                 log("📡 检测到Livewire活动")
 
@@ -319,11 +319,13 @@ def detect_page_stuck(sb):
     """检测页面是否卡死"""
     try:
         result = sb.execute_script("""
-        return {
-            ready: document.readyState,
-            text: document.body ? document.body.innerText.length : 0,
-            online: navigator.onLine
-        };
+        return (function() {
+            return {
+                ready: document.readyState,
+                text: document.body ? document.body.innerText.length : 0,
+                online: navigator.onLine
+            };
+        })();
         """)
         if not result: return True
         if result["ready"] != "complete": return True
@@ -408,7 +410,7 @@ def analyze_livewire(sb):
     从 __livewire_calls 中提取包含 serverMemo 的请求
     """
     try:
-        calls = sb.execute_script("return window.__livewire_calls || [];")
+        calls = sb.execute_script("(function(){ return window.__livewire_calls || []; })()")
         if not calls: return None
 
         for item in calls:
@@ -554,7 +556,7 @@ def main():
 
                     log("⏳ 等待 Livewire/Alpine 组件完全挂载...")
                     for _ in range(10):
-                        has_lw = sb.execute_script("return !!window.Livewire;")
+                        has_lw = sb.execute_script("(function(){ return !!window.Livewire; })()")
                         if has_lw: break
                         time.sleep(1)
                     log(f"✅ 组件已挂载 ({_ + 1}秒)")
@@ -752,12 +754,14 @@ def main():
 
                     def check_turnstile_present():
                         return bool(sb.execute_script("""
-                            return !!document.querySelector('iframe[src*="challenges.cloudflare.com"]')
-                                || !!document.querySelector('.cf-turnstile')
-                                || !!document.querySelector('[class*="turnstile-"]')
-                                || !!document.querySelector('[data-testid="turnstile-widget"]')
-                                || !!document.querySelector('[aria-label="Security verification"]')
-                                || (document.body && document.body.innerText.includes("Verify you're human"));
+                            return (function() {
+                                return !!document.querySelector('iframe[src*="challenges.cloudflare.com"]')
+                                    || !!document.querySelector('.cf-turnstile')
+                                    || !!document.querySelector('[class*="turnstile-"]')
+                                    || !!document.querySelector('[data-testid="turnstile-widget"]')
+                                    || !!document.querySelector('[aria-label="Security verification"]')
+                                    || (document.body && document.body.innerText.includes("Verify you're human"));
+                            })();
                         """))
 
                     responded = False
@@ -801,7 +805,7 @@ def main():
                             continue
 
                         # 2. 检查时间是否增加
-                        page_after = sb.execute_script("return document.body?document.body.innerText:'';")
+                        page_after = sb.execute_script("(function(){ return document.body?document.body.innerText:''; })()")
                         match_new = re.search(r'(\d+:){2}\d+', page_after)
                         if match_new:
                             new_secs = parse_countdown_seconds(match_new.group(0))
@@ -912,7 +916,7 @@ def wait_ad_flow(sb, before_secs, max_wait=AD_WAIT_SEC):
         log(f"📺 iframe详情: {iframes}")
 
         # 检测页面文本
-        body_text = sb.execute_script("return document.body?document.body.innerText.substring(0,1000):'';")
+        body_text = sb.execute_script("(function(){ return document.body?document.body.innerText.substring(0,1000):''; })()")
         log(f"📄 页面文本前1000字符:\n{body_text[:500]}...")
 
         # 检测包含 "ad" 或 "Watching" 的元素
