@@ -135,28 +135,32 @@ def check_button_cooldown(sb):
             exp_match = re.search(r'expires\s+(\d+\S+)', page_text, re.I)
             if exp_match:
                 exp_text = exp_match.group(0).strip()
-                # 匹配 HH:MM 格式 (如 "expires 20:00" 表示 20分钟)
-                hm_match = re.search(r'(\d+):(\d+)', exp_text)
-                if hm_match:
-                    hours = int(hm_match.group(1))
-                    mins = int(hm_match.group(2))
-                    remaining_sec = hours * 3600 + mins * 60
-                    log(f"⏳ 检测到续费冷却: {exp_text} (剩余 {remaining_sec}秒 = {hours}h{mins}m)")
-                    return {{'cooldown': True, 'remaining': remaining_sec, 'text': exp_text}}
-                # 匹配纯数字格式 (如 "expires 5m", "expires 2h")
-                num_match = re.search(r'(\d+)', exp_text)
-                if num_match:
-                    val = int(num_match.group(1))
-                    if 'd' in exp_text.lower():
-                        remaining_sec = val * 86400
-                    elif 'h' in exp_text.lower():
-                        remaining_sec = val * 3600
-                    elif 'm' in exp_text.lower():
-                        remaining_sec = val * 60
-                    else:
-                        remaining_sec = val
-                    log(f"⏳ 检测到续费冷却: {exp_text} (剩余 {remaining_sec}秒)")
-                    return {{'cooldown': True, 'remaining': remaining_sec, 'text': exp_text}}
+                # 排除 AM/PM 格式 (如 "expires 12:46 AM" 是时钟时间，不是冷却)
+                if re.search(r'\b(AM|PM|am|pm)\b', exp_text):
+                    log(f"\u2139\ufe0f 忽略时钟时间: {exp_text}")
+                else:
+                    # 匹配 HH:MM 格式 (如 "expires 20:00" 表示20分钟)
+                    hm_match = re.search(r'(\d+):(\d+)', exp_text)
+                    if hm_match:
+                        hours = int(hm_match.group(1))
+                        mins = int(hm_match.group(2))
+                        remaining_sec = hours * 3600 + mins * 60
+                        log(f"\u23f3 检测到续费冷却: {exp_text} (剩余 {remaining_sec}秒 = {hours}h{mins}m)")
+                        return {{'cooldown': True, 'remaining': remaining_sec, 'text': exp_text}}
+                    # 匹配纯数字+单位格式 (如 "expires 5m", "expires 2h")
+                    num_match = re.search(r'(\d+)', exp_text)
+                    if num_match:
+                        val = int(num_match.group(1))
+                        if 'd' in exp_text.lower():
+                            remaining_sec = val * 86400
+                        elif 'h' in exp_text.lower():
+                            remaining_sec = val * 3600
+                        elif 'm' in exp_text.lower():
+                            remaining_sec = val * 60
+                        else:
+                            remaining_sec = val
+                        log(f"\u23f3 检测到续费冷却: {exp_text} (剩余 {remaining_sec}秒)")
+                        return {{'cooldown': True, 'remaining': remaining_sec, 'text': exp_text}}
             # 匹配 "XX:XX cd" 格式 (如 "04:56 cd" 表示按钮冷却倒计时)
             cd_match = re.search(r'(\d+):(\d+)\s+cd', page_text, re.I)
             if cd_match:
