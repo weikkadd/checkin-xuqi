@@ -192,23 +192,41 @@ def handle_turnstile(sb, max_retries=5):
 
             # 获取 Turnstile iframe 在屏幕上的绝对坐标 (含 Xvfb 偏移)
             iframe = cf_iframes[0]
-            rect = sb.execute_script(
+            # 获取更多上下文: iframe rect + window 尺寸 + 滚动偏移
+            rect_info = sb.execute_script(
                 "(function() { var el = arguments[0]; var r = el.getBoundingClientRect(); "
-                "return {x: r.x, y: r.y, w: r.width, h: r.height}; })();",
+                "return {x: r.x, y: r.y, w: r.width, h: r.height, "
+                "winW: window.innerWidth, winH: window.innerHeight, "
+                "scrollX: window.scrollX, scrollY: window.scrollY, "
+                "outerW: window.outerWidth, outerH: window.outerHeight, "
+                "screenX: window.screenX, screenY: window.screenY}; })();",
                 iframe
             )
 
-            if not rect or rect.get('w', 0) <= 0:
+            if not rect_info or rect_info.get('w', 0) <= 0:
                 log(f"⚠️ [尝试 {attempt+1}] 无法获取 iframe 坐标")
                 time.sleep(2)
                 continue
 
-            # Turnstile 复选框位置: iframe 左侧约 30px, 垂直居中
-            click_x = int(rect['x'] + 30)
-            click_y = int(rect['y'] + rect['h'] / 2)
-            log(f"🎯 Turnstile iframe rect={rect}, 复选框坐标 ({click_x}, {click_y})")
+            log(f"🐛 iframe rect_info: {rect_info}")
 
-            # 策略 1: SeleniumBase uc_gui_click_captcha (内部用 xdotool)
+            # Xvfb 中 Chrome 全屏, 视口坐标 == 屏幕坐标 (通常 screenX/screenY=0)
+            # 但有时 Chrome 窗口有标题栏, 需要 + outerH - innerH 偏移
+            chrome_offset_y = max(0, int(rect_info.get('outerH', 0) - rect_info.get('winH', 0)))
+            screen_offset_x = int(rect_info.get('screenX', 0))
+            screen_offset_y = int(rect_info.get('screenY', 0))
+
+            # iframe 在屏幕上的真实坐标
+            iframe_x = rect_info['x'] + screen_offset_x
+            iframe_y = rect_info['y'] + screen_offset_y + chrome_offset_y
+
+            # Turnstile 复选框位置: iframe 左侧约 30px (复选框 26px + 4px padding), 垂直居中
+            click_x = int(iframe_x + 30)
+            click_y = int(iframe_y + rect_info['h'] / 2)
+
+            log(f"🎯 iframe 屏幕 ({iframe_x}, {iframe_y}) | 复选框 ({click_x}, {click_y}) | chrome_offset_y={chrome_offset_y}")
+
+            # 策略 1: SeleniumBase uc_gui_click_captcha (内部用 xdotool, 自动找复选框)
             try:
                 sb.uc_gui_click_captcha()
                 log(f"✅ [尝试 {attempt+1}] uc_gui_click_captcha 已执行")
@@ -221,28 +239,33 @@ def handle_turnstile(sb, max_retries=5):
             except Exception as e:
                 log(f"⚠️ [尝试 {attempt+1}] uc_gui_click_captcha 失败: {e}")
 
-            # 策略 2: 直接调用 xdotool 系统级点击 (绕过 isTrusted 限制)
-            try:
-                # 先移动鼠标到目标位置 (mousemove)
-                subprocess.run(
-                    ["xdotool", "mousemove", str(click_x), str(click_y)],
-                    check=False, timeout=5, capture_output=True
-                )
-                time.sleep(0.3)
-                # 鼠标按下 + 抬起 (真实系统事件, isTrusted=true)
-                subprocess.run(
-                    ["xdotool", "click", "1"],
-                    check=False, timeout=5, capture_output=True
-                )
-                log(f"✅ [尝试 {attempt+1}] xdotool 系统点击 ({click_x}, {click_y})")
-                time.sleep(5)
-                if not sb.find_elements('iframe[src*="cloudflare"]') and \
-                   not sb.find_elements('iframe[src*="challenges.cloudflare.com"]'):
-                    log("🎉 Turnstile 已消失 (策略2 xdotool 成功)")
-                    return True
-                log(f"⚠️ [尝试 {attempt+1}] xdotool 点击后 Turnstile 仍在")
-            except Exception as e:
-                log(f"⚠️ [尝试 {attempt+1}] xdotool 点击失败: {e}")
+            # 策略 2: 直接调用 xdotool 系统级点击 (多个候选位置)
+            # Turnstile 复选框实际位置可能因 iframe 边距而偏移, 试多个 X 坐标
+            for offset_x in [30, 25, 35, 20, 40]:
+                try:
+                    target_x = int(iframe_x + offset_x)
+                    target_y = click_y
+                    # 先移动鼠标 (这步很关键, Turnstile 会检测鼠标移动轨迹)
+                    subprocess.run(
+                        ["xdotool", "mousemove", "--sync", str(target_x), str(target_y)],
+                        check=False, timeout=5, capture_output=True
+                    )
+                    time.sleep(0.3)
+                    # 真实点击
+                    subprocess.run(
+                        ["xdotool", "click", "--window", "%1", "1"],
+                        check=False, timeout=5, capture_output=True
+                    )
+                    log(f"✅ [尝试 {attempt+1}] xdotool 点击 ({target_x}, {target_y}) offset_x={offset_x}")
+                    time.sleep(4)
+                    if not sb.find_elements('iframe[src*="cloudflare"]') and \
+                       not sb.find_elements('iframe[src*="challenges.cloudflare.com"]'):
+                        log(f"🎉 Turnstile 已消失 (策略2 xdotool 成功, offset_x={offset_x})")
+                        return True
+                except Exception as e:
+                    log(f"⚠️ [尝试 {attempt+1}] xdotool offset={offset_x} 失败: {e}")
+
+            log(f"⚠️ [尝试 {attempt+1}] xdotool 5 个候选位置都未通过")
 
             # 策略 3: iframe 内 checkbox JS 点击 (兜底, 可能无效)
             try:
