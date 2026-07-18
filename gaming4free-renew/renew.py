@@ -1021,12 +1021,22 @@ def main():
                         click_result = sb.execute_script("""
                             var btns = document.querySelectorAll('button');
                             for (var i = 0; i < btns.length; i++) {
-                                if ((btns[i].textContent || '').indexOf('90') !== -1) {
+                                var txt = (btns[i].innerText || btns[i].textContent || '').trim();
+                                if (txt.indexOf('90') !== -1 || txt.indexOf('+ 90') !== -1 || txt.indexOf('+90') !== -1) {
                                     btns[i].scrollIntoView({block: 'center'});
                                     btns[i].removeAttribute('disabled');
                                     btns[i].style.cssText += '; pointer-events:auto !important;';
                                     btns[i].click();
-                                    return 'clicked:' + btns[i].textContent.trim();
+                                    return 'clicked:' + txt;
+                                }
+                            }
+                            // Fallback: 查找包含 "90" 的任意可见元素
+                            var allEls = document.querySelectorAll('*');
+                            for (var i = 0; i < allEls.length; i++) {
+                                var t = (allEls[i].innerText || allEls[i].textContent || '').trim();
+                                if (t.indexOf('90 min') !== -1 || t.indexOf('+90') !== -1) {
+                                    allEls[i].click();
+                                    return 'clicked-fallback:' + t;
                                 }
                             }
                             return 'not-found';
