@@ -20,7 +20,7 @@ from config import SERVERS
 
 MAX_BROWSER_RETRIES = 3
 # 续期阈值: 剩余 < 45 小时才触发续期
-RENEW_THRESHOLD_SECONDS = 45 * 162000
+RENEW_THRESHOLD_SECONDS = 45 * 3600
 
 
 def main():
@@ -83,11 +83,11 @@ def main():
 
                     # ★ 阈值判断: 剩余 > 45 小时直接跳过
                     if before_ls > RENEW_THRESHOLD_SECONDS:
-                        log(f"✅ 剩余 {before_lt} > 5h 阈值, 跳过续期")
-                        send_tg(f"✅ 跳过 (剩余 {before_lt} > 5h)", server_name, before_lt)
+                        log(f"✅ 剩余 {before_lt} > 45h 阈值, 跳过续期")
+                        send_tg(f"✅ 跳过 (剩余 {before_lt} > 45h)", server_name, before_lt)
                         break
 
-                    log(f"⏬ 剩余 {before_lt} ≤ 5h 阈值, 开始续期流程...")
+                    log(f"⏬ 剩余 {before_lt} ≤ 45h 阈值, 开始续期流程...")
 
                     cooldown_info = check_button_cooldown(driver)
                     if cooldown_info and cooldown_info.get('cooldown'):
