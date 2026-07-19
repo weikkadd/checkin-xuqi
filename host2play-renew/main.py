@@ -226,10 +226,16 @@ def run_one(label: str, renew_url: str, cookie_str: str):
     if PROXY_URL:
         if "@" in PROXY_URL:
             plugin = create_proxy_auth_extension(PROXY_URL)
-            if plugin: co.add_extension(plugin)
-            else: co.set_proxy(PROXY_URL)
-        else: co.set_proxy(PROXY_URL)
-    elif WARP_PROXY: co.set_proxy(WARP_PROXY)
+            if plugin: 
+                co.add_extension(plugin)
+            else:
+                # 即使有 @ 但解析失败，也尝试直接设置
+                co.set_argument(f'--proxy-server={PROXY_URL}')
+        else:
+            # 直接使用启动参数设置代理，绕过 DrissionPage 的 SOCKS 限制
+            co.set_argument(f'--proxy-server={PROXY_URL}')
+    elif WARP_PROXY:
+        co.set_argument(f'--proxy-server={WARP_PROXY}')
 
     co.set_argument('--disable-blink-features=AutomationControlled')
     co.set_user_agent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36')
