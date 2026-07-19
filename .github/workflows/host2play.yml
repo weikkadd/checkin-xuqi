@@ -64,12 +64,48 @@ jobs:
           echo "[INFO] WARP Trace:"
           curl -s --max-time 10 https://www.cloudflare.com/cdn-cgi/trace | grep -E 'ip=|warp=|loc=' || true
 
+      - name: 配置 TUIC 代理桥接
+        run: |
+          echo "🚀 下载 tuic-client..."
+          curl -L https://github.com/EAimTY/tuic/releases/download/1.0.0/tuic-client-1.0.0-x86_64-unknown-linux-gnu -o tuic-client
+          chmod +x tuic-client
+          
+          echo "📝 生成 TUIC 配置..."
+          cat <<EOF > tuic_config.json
+          {
+              "relay": {
+                  "server": {
+                      "address": "185.156.53.135",
+                      "port": 26689,
+                      "uuid": "abe6bc0c-e62c-4f1c-981f-7d790576c2fa",
+                      "password": "eishare2025",
+                      "congestion_control": "bbr",
+                      "alpn": ["h3"],
+                      "sni": "www.bing.com",
+                      "allow_insecure": true
+                  }
+              },
+              "local": {
+                  "server": {
+                      "address": "127.0.0.1",
+                      "port": 1080
+                  },
+                  "protocol": "socks5"
+              }
+          }
+          EOF
+          
+          echo "⚡ 启动 TUIC 客户端..."
+          ./tuic-client -c tuic_config.json > tuic.log 2>&1 &
+          sleep 5
+          cat tuic.log
+
       - name: 执行续期
         env:
           H2P_RENEW_URL: ${{ secrets.H2P_RENEW_URL }}
           H2P_COOKIE: ${{ secrets.H2P_COOKIE }}
           H2P_ACCOUNTS: ${{ secrets.H2P_ACCOUNTS }}
-          PROXY_URL: ${{ secrets.PROXY_URL }}
+          PROXY_URL: "socks5://127.0.0.1:1080"
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         working-directory: host2play-renew
