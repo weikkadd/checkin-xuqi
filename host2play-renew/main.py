@@ -259,6 +259,61 @@ def inject_cookies(page, cookie_str: str):
             try: page.set.cookies({k.strip(): v.strip()})
             except: pass
 
+def create_proxy_auth_extension(proxy_url):
+    """为带认证的代理创建临时插件"""
+    import zipfile
+    if "@" not in proxy_url: return None
+    
+    try:
+        auth_part, addr_part = proxy_url.split("://")[1].split("@")
+        proxy_user, proxy_pass = auth_part.split(":")
+        proxy_host, proxy_port = addr_part.split(":")
+    except: return None
+
+    manifest_json = """
+    {
+        "version": "1.0.0",
+        "manifest_version": 2,
+        "name": "Chrome Proxy",
+        "permissions": ["proxy", "tabs", "unlimitedStorage", "storage", "<all_urls>", "webRequest", "webRequestBlocking"],
+        "background": { "scripts": ["background.js"] },
+        "minimum_chrome_version":"22.0.0"
+    }
+    """
+    background_js = """
+    var config = {
+        mode: "fixed_servers",
+        rules: {
+            singleProxy: {
+                scheme: "http",
+                host: "%s",
+                port: parseInt(%s)
+            },
+            bypassList: ["localhost"]
+        }
+    };
+    chrome.proxy.settings.set({value: config, scope: "regular"}, function() {});
+    function callbackFn(details) {
+        return {
+            authCredentials: {
+                username: "%s",
+                password: "%s"
+            }
+        };
+    }
+    chrome.webRequest.onAuthRequired.addListener(
+        callbackFn,
+        {urls: ["<all_urls>"]},
+        ['blocking']
+    );
+    """ % (proxy_host, proxy_port, proxy_user, proxy_pass)
+    
+    plugin_path = ROOT / f"proxy_auth_plugin.zip"
+    with zipfile.ZipFile(str(plugin_path), 'w') as zp:
+        zp.writestr("manifest.json", manifest_json)
+        zp.writestr("background.js", background_js)
+    return str(plugin_path)
+
 def run_one(label: str, renew_url: str, cookie_str: str):
     from DrissionPage import ChromiumPage, ChromiumOptions
     co = ChromiumOptions()
@@ -269,8 +324,14 @@ def run_one(label: str, renew_url: str, cookie_str: str):
     
     # 代理设置
     if PROXY_URL:
-        log.info(f"🌐 使用代理: {PROXY_URL}")
-        co.set_proxy(PROXY_URL)
+        if "@" in PROXY_URL:
+            log.info(f"🌐 使用带认证的代理: {PROXY_URL.split('@')[1]}")
+            plugin = create_proxy_auth_extension(PROXY_URL)
+            if plugin: co.add_extension(plugin)
+            else: co.set_proxy(PROXY_URL)
+        else:
+            log.info(f"🌐 使用代理: {PROXY_URL}")
+            co.set_proxy(PROXY_URL)
     elif WARP_PROXY:
         log.info(f"🌐 使用 WARP 代理: {WARP_PROXY}")
         co.set_proxy(WARP_PROXY)
