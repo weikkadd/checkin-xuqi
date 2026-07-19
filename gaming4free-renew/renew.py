@@ -17,11 +17,9 @@ except ImportError:
     sys.exit(1)
 
 # ── 配置 ──────────────────────────────────────────────
-# 方式 A：URL + Cookie 分开（推荐单账号）
 RENEW_URL = os.environ.get("GAME4FREE_RENEW_URL","").strip()
 COOKIE = os.environ.get("GAME4FREE_COOKIE","").strip()
 
-# 方式 B：多账号合并（名称|||URL|||Cookie）
 ACCOUNTS = []
 for line in os.environ.get("GAME4FREE_ACCOUNTS","").split("\n"):
     line = line.strip()
@@ -31,16 +29,13 @@ for line in os.environ.get("GAME4FREE_ACCOUNTS","").split("\n"):
     if len(parts) >= 3:
         ACCOUNTS.append((parts[0].strip(), parts[1].strip(), parts[2].strip()))
 
-# 兼容旧版 GAME4FREE_ACCOUNT（名称|||slug|||邮箱）
 for line in os.environ.get("GAME4FREE_ACCOUNT","").split("\n"):
     line = line.strip()
     if not line:
         continue
     parts = line.split("|||")
     if len(parts) >= 3:
-        # 检查是否是旧格式（3部分是邮箱）还是新格式（3部分是URL）
         if "@" in parts[2] and not parts[1].startswith("http"):
-            # 旧格式：名称|||slug|||邮箱，需要拼接 URL
             ACCOUNTS.append((parts[0].strip(), "https://control.gaming4free.net/server/" + parts[1].strip(), parts[2].strip()))
 
 TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN","")
@@ -64,7 +59,6 @@ def screenshot(sb, name="screenshot"):
         pass
 
 def send_tg(message, server_name="", time_text=""):
-    """发送 Telegram 通知 — 紧凑面板格式"""
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
         return
     try:
@@ -79,9 +73,7 @@ def send_tg(message, server_name="", time_text=""):
                     masked = local + "****@" + domain
         else:
             masked = "****"
-        
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
         msg = (
             f"🎮Gaming4Free Pro\n"
             f"🖥️服务器: {server_name}\n"
@@ -90,7 +82,6 @@ def send_tg(message, server_name="", time_text=""):
             f"⏱剩余: {time_text}\n"
             f"⚙️模式: Renew-Pro v10"
         )
-        
         url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
         data = f"chat_id={TG_CHAT_ID}&text={urllib.parse.quote(msg)}&parse_mode=HTML".encode()
         req = urllib.request.Request(url, data=data, headers={"Content-Type":"application/x-www-form-urlencoded"})
@@ -100,7 +91,6 @@ def send_tg(message, server_name="", time_text=""):
         log(f"⚠️ TG 通知失败: {e}")
 
 def parse_countdown_seconds(match_str):
-    """解析时间字符串为秒数"""
     if not match_str:
         return 0
     m = re.match(r'(\d+):(\d+):(\d+)', match_str)
@@ -115,7 +105,6 @@ def parse_countdown_seconds(match_str):
     return 0
 
 def get_remaining_time(sb):
-    """获取页面剩余时间（秒）和文本"""
     try:
         page_text = sb.execute_script("return document.body?document.body.innerText.substring(0,2000):'';")
         if not page_text:
@@ -131,13 +120,10 @@ def get_remaining_time(sb):
         return ("(错误)", 0)
 
 def check_button_cooldown(sb):
-    """检查续期按钮是否冷却"""
     try:
         page_text = sb.execute_script("return document.body?document.body.innerText.substring(0,2000):'';")
         if not page_text:
             return None
-        
-        # 策略1: 匹配 "expires XX:XX" (不含 AM/PM)
         exp_no_ampm = re.search(r'expires\s+(\d{1,2}:\d{2})(?!\s*[APap][Mm])', page_text, re.I)
         if exp_no_ampm:
             hhmm = exp_no_ampm.group(1)
@@ -148,8 +134,6 @@ def check_button_cooldown(sb):
                 remaining_sec = hours * 3600 + minutes * 60
                 log(f"⏳ 检测到冷却 (expires): {hhmm} (剩余 {remaining_sec}秒)")
                 return {'cooldown': True, 'remaining': remaining_sec, 'text': hhmm}
-        
-        # 策略1.5: 匹配 "XX:XX cd" 格式
         cd_match = re.search(r'(\d+):(\d+)\s+cd', page_text, re.I)
         if cd_match:
             mins = int(cd_match.group(1))
@@ -157,8 +141,6 @@ def check_button_cooldown(sb):
             remaining_sec = mins * 60 + secs
             log(f"⏳ 检测到按钮冷却倒计时: {cd_match.group(0).strip()} (剩余 {remaining_sec}秒)")
             return {'cooldown': True, 'remaining': remaining_sec, 'text': cd_match.group(0).strip()}
-        
-        # 策略2: 检查按钮 disabled 状态
         try:
             disabled = bool(sb.execute_script("""
                 var btns = document.querySelectorAll('button');
@@ -175,7 +157,6 @@ def check_button_cooldown(sb):
                 return {'cooldown': True, 'remaining': 0, 'text': 'disabled'}
         except:
             pass
-        
         return None
     except Exception as e:
         log(f"⚠️ 检查按钮冷却失败: {e}")
@@ -185,19 +166,13 @@ def check_button_cooldown(sb):
 def main():
     log("========== 开始处理服务器账号 ==========")
     
-    # 确定要处理的服务器列表
     servers = []
-    
-    # 方式 A：URL + Cookie
     if RENEW_URL and COOKIE:
-        # 从 URL 提取名称
         server_name = "我的服务器"
         if "/server/" in RENEW_URL:
             slug = RENEW_URL.split("/server/")[1].split("/")[0]
             server_name = f"服务器-{slug[:8]}"
         servers.append((server_name, RENEW_URL, COOKIE))
-    
-    # 方式 B：多账号
     for name, url, cookie in ACCOUNTS:
         servers.append((name, url, cookie))
     
@@ -209,151 +184,137 @@ def main():
     for server_name, server_url, server_cookie in servers:
         for browser_attempt in range(MAX_BROWSER_RETRIES):
             sb = None
+            driver = None
             try:
                 log(f"🚀 正在启动浏览器 (第 {browser_attempt+1}/{MAX_BROWSER_RETRIES} 次尝试)...")
                 
                 sb = SB(uc=True, headless=False, browser='chrome', agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                driver = sb.driver
                 
-                with sb:
-                    log(f"🌐 正在访问续期页面 (第 {browser_attempt+1}/{MAX_BROWSER_RETRIES} 次尝试): {server_url}")
-                    sb.open_url(server_url)
-                    log(f"📄 当前页面标题: {sb.get_title()}")
-                    
-                    # 注入 Cookie
-                    if server_cookie:
-                        log("🍪 正在注入浏览器 Cookie 凭证...")
-                        sb.driver.add_cookie({"name":"XSRF-TOKEN","value":"%22eyJpdiI6IjJhQ2R6ZmVnM2R4a0RjV09zZ3B3V1E9PSIsInZhbHVlIjoia3Z0Q3N3cG10ZlV5TnRrN0R3Q1FkU0Z4VjNpQkVJYjJjQlB3a2xkSEJ2eGJYR3l1UzNkQm91UmxVUjNqR1JhS21yYjN4eFRlU0JnZUJhNlBGM2x5a0dVZnVnZ3h6ZjR2YjB3c0JhZjhYU1h3aEh5N0xhT2JxT3JFZG5hVzBZT3V2S1EiLCJtYWMiOiI1M2YwNjM0ZjBiMWQ4ZjIyZmM2NjQ1Y2IyY2RhZWI4N2U1OGIyZjI5NjI4ZjJmYjI2MjA5YmVjZjQ4YjBhNDcyIiwidGFnIjoiIn0%22","domain":".gaming4free.net","path":"/","secure":True})
-                        sb.driver.add_cookie({"name":"g4f_session", "value":server_cookie, "domain":".gaming4free.net", "path":"/", "secure":True})
-                        log("✅ Cookie 凭证注入完成")
-                    
-                    # 刷新页面让 Cookie 生效
-                    log("🔄 刷新页面让 Cookie 生效...")
-                    sb.refresh()
-                    time.sleep(5)
-                    log(f"📄 刷新后页面标题: {sb.get_title()}")
-                    
-                    log(f"🔑 准备执行账号操作: {server_name}")
-                    
-                    # 等待页面加载
-                    log("⏳ 等待页面组件完全加载 (最多15秒)...")
-                    time.sleep(15)
-                    
-                    # 获取续期前时间
-                    log("⏳ 等待页面完全渲染以获取初始时间...")
-                    before_lt, before_ls = get_remaining_time(sb)
-                    log(f"⏱️ 续期前剩余时长: {before_lt} ({before_ls}秒)")
-                    
-                    # 检查按钮冷却
-                    cooldown_info = check_button_cooldown(sb)
-                    if cooldown_info and cooldown_info.get('cooldown'):
-                        remaining = cooldown_info.get('remaining', 0)
-                        log(f"⏳ 按钮冷却中，剩余 {remaining}秒，等待...")
-                        time.sleep(min(remaining, 300))
-                    
-                    # 点击 +90 min
-                    log("🖱️ 正在寻找并点击 +90 分钟续期按钮...")
-                    
-                    # 查找按钮
-                    button_text = sb.execute_script("""
-                        var btns = document.querySelectorAll('button, [role="button"]');
-                        for (var i = 0; i < btns.length; i++) {
-                            var txt = (btns[i].innerText || btns[i].textContent || '').trim();
-                            if (txt.indexOf('90') !== -1 || txt.indexOf('+ 90') !== -1 || txt.indexOf('+90') !== -1) {
-                                return txt;
-                            }
+                log(f"🌐 正在访问续期页面 (第 {browser_attempt+1}/{MAX_BROWSER_RETRIES} 次尝试): {server_url}")
+                driver.get(server_url)
+                log(f"📄 当前页面标题: {driver.title}")
+                
+                if server_cookie:
+                    log("🍪 正在注入浏览器 Cookie 凭证...")
+                    driver.add_cookie({"name":"XSRF-TOKEN","value":"%22eyJpdiI6IjJhQ2R6ZmVnM2R4a0RjV09zZ3B3V1E9PSIsInZhbHVlIjoia3Z0Q3N3cG10ZlV5TnRrN0R3Q1FkU0Z4VjNpQkVJYjJjQlB3a2xkSEJ2eGJYR3l1UzNkQm91UmxVUjNqR1JhS21yYjN4eFRlU0JnZUJhNlBGM2x5a0dVZnVnZ3h6ZjR2YjB3c0JhZjhYU1h3aEh5N0xhT2JxT3JFZG5hVzBZT3V2S1EiLCJtYWMiOiI1M2YwNjM0ZjBiMWQ4ZjIyZmM2NjQ1Y2IyY2RhZWI4N2U1OGIyZjI5NjI4ZjJmYjI2MjA5YmVjZjQ4YjBhNDcyIiwidGFnIjoiIn0%22","domain":".gaming4free.net","path":"/","secure":True})
+                    driver.add_cookie({"name":"g4f_session", "value":server_cookie, "domain":".gaming4free.net", "path":"/", "secure":True})
+                    log("✅ Cookie 凭证注入完成")
+                
+                log("🔄 刷新页面让 Cookie 生效...")
+                driver.refresh()
+                time.sleep(5)
+                log(f"📄 刷新后页面标题: {driver.title}")
+                
+                log(f"🔑 准备执行账号操作: {server_name}")
+                log("⏳ 等待页面组件完全加载 (最多15秒)...")
+                time.sleep(15)
+                
+                log("⏳ 等待页面完全渲染以获取初始时间...")
+                before_lt, before_ls = get_remaining_time(driver)
+                log(f"⏱️ 续期前剩余时长: {before_lt} ({before_ls}秒)")
+                
+                cooldown_info = check_button_cooldown(driver)
+                if cooldown_info and cooldown_info.get('cooldown'):
+                    remaining = cooldown_info.get('remaining', 0)
+                    log(f"⏳ 按钮冷却中，剩余 {remaining}秒，等待...")
+                    time.sleep(min(remaining, 300))
+                
+                log("🖱️ 正在寻找并点击 +90 分钟续期按钮...")
+                
+                button_text = driver.execute_script("""
+                    var btns = document.querySelectorAll('button, [role="button"]');
+                    for (var i = 0; i < btns.length; i++) {
+                        var txt = (btns[i].innerText || btns[i].textContent || '').trim();
+                        if (txt.indexOf('90') !== -1 || txt.indexOf('+ 90') !== -1 || txt.indexOf('+90') !== -1) {
+                            return txt;
                         }
-                        return 'not-found';
-                    """)
-                    log(f"🎯 找到按钮: {button_text}")
-                    
-                    if button_text == 'not-found':
-                        log("❌ 未找到 +90 min 按钮")
-                        send_tg("❌ 未找到续期按钮", server_name, before_lt)
-                        break
-                    
-                    # 点击按钮
-                    click_result = sb.execute_script("""
-                        var btns = document.querySelectorAll('button, [role="button"]');
-                        for (var i = 0; i < btns.length; i++) {
-                            var txt = (btns[i].innerText || btns[i].textContent || '').trim();
-                            if (txt.indexOf('90') !== -1 || txt.indexOf('+ 90') !== -1 || txt.indexOf('+90') !== -1) {
-                                btns[i].scrollIntoView({block: 'center'});
-                                btns[i].removeAttribute('disabled');
-                                btns[i].style.cssText += '; pointer-events:auto !important;';
-                                btns[i].click();
-                                return 'clicked:' + txt;
-                            }
+                    }
+                    return 'not-found';
+                """)
+                log(f"🎯 找到按钮: {button_text}")
+                
+                if button_text == 'not-found':
+                    log("❌ 未找到 +90 min 按钮")
+                    send_tg("❌ 未找到续期按钮", server_name, before_lt)
+                    break
+                
+                click_result = driver.execute_script("""
+                    var btns = document.querySelectorAll('button, [role="button"]');
+                    for (var i = 0; i < btns.length; i++) {
+                        var txt = (btns[i].innerText || btns[i].textContent || '').trim();
+                        if (txt.indexOf('90') !== -1 || txt.indexOf('+ 90') !== -1 || txt.indexOf('+90') !== -1) {
+                            btns[i].scrollIntoView({block: 'center'});
+                            btns[i].removeAttribute('disabled');
+                            btns[i].style.cssText += '; pointer-events:auto !important;';
+                            btns[i].click();
+                            return 'clicked:' + txt;
                         }
-                        return 'not-found';
-                    """)
-                    log(f"🎯 点击结果: {click_result}")
-                    
-                    if 'clicked' in click_result:
-                        # 等待 Turnstile 出现
-                        log("⏳ 等待 Turnstile 验证...")
-                        ts_detected = False
-                        for tw in range(30):
-                            try:
-                                ts_present = bool(sb.execute_script("""
-                                    return !!document.querySelector('iframe[src*="challenges.cloudflare.com"]')
-                                        || !!document.querySelector('.cf-turnstile')
-                                        || (document.body && document.body.innerText.includes("请验证您是真人"));
-                                """))
-                            except:
-                                ts_present = False
-                            if ts_present:
-                                log("🛡️ 检测到 Turnstile")
-                                ts_detected = True
-                                break
-                            time.sleep(1)
-                        
-                        if ts_detected:
-                            # 等待 Turnstile 自动通过
-                            log("⏳ 等 Turnstile 通过 (最多 20 秒, 检测 iframe 消失)...")
-                            for wait in range(20):
-                                try:
-                                    gone = not bool(sb.execute_script("""
-                                        return !!document.querySelector('iframe[src*="challenges.cloudflare.com"]')
-                                            || !!document.querySelector('.cf-turnstile');
-                                    """))
-                                    if gone:
-                                        log(f"✅ [{wait+1}秒] Turnstile 已通过 (iframe 消失)")
-                                        break
-                                except:
-                                    pass
-                                time.sleep(1)
-                            
-                            # 额外等待页面响应
-                            time.sleep(5)
-                        else:
-                            log("ℹ️ 未检测到 Turnstile，直接继续")
-                            time.sleep(5)
-                        
-                        # 刷新页面验证
-                        log("🔄 用 driver.refresh() 刷新页面验证续期结果...")
+                    }
+                    return 'not-found';
+                """)
+                log(f"🎯 点击结果: {click_result}")
+                
+                if 'clicked' in click_result:
+                    log("⏳ 等待 Turnstile 验证...")
+                    ts_detected = False
+                    for tw in range(30):
                         try:
-                            sb.refresh()
-                            time.sleep(5)
-                        except Exception as e:
-                            log(f"⚠️ refresh 失败: {e}")
-                            time.sleep(10)
-                        
-                        # 获取续期后时间
-                        after_lt, after_ls = get_remaining_time(sb)
-                        diff = after_ls - before_ls
-                        
-                        log(f"⏱️ 续期后时间: {after_lt} ({after_ls}秒)，增加: {diff}秒")
-                        
-                        if diff > 0:
-                            log(f"✅ 续期成功！时间增加 {diff}秒 ({before_lt} → {after_lt})")
-                            send_tg(f"✅ Pro续期成功 (+{diff}s)", server_name, after_lt)
-                        else:
-                            log(f"❌ 续期失败！时间减少 {abs(diff)}秒 ({before_lt} → {after_lt})")
-                            send_tg(f"❌ Pro续期失败 (-{abs(diff)}s)", server_name, after_lt)
+                            ts_present = bool(driver.execute_script("""
+                                return !!document.querySelector('iframe[src*="challenges.cloudflare.com"]')
+                                    || !!document.querySelector('.cf-turnstile')
+                                    || (document.body && document.body.innerText.includes("请验证您是真人"));
+                            """))
+                        except:
+                            ts_present = False
+                        if ts_present:
+                            log("🛡️ 检测到 Turnstile")
+                            ts_detected = True
+                            break
+                        time.sleep(1)
+                    
+                    if ts_detected:
+                        log("⏳ 等 Turnstile 通过 (最多 20 秒, 检测 iframe 消失)...")
+                        for wait in range(20):
+                            try:
+                                gone = not bool(driver.execute_script("""
+                                    return !!document.querySelector('iframe[src*="challenges.cloudflare.com"]')
+                                        || !!document.querySelector('.cf-turnstile');
+                                """))
+                                if gone:
+                                    log(f"✅ [{wait+1}秒] Turnstile 已通过 (iframe 消失)")
+                                    break
+                            except:
+                                pass
+                            time.sleep(1)
+                        time.sleep(5)
                     else:
-                        log("❌ 点击按钮失败")
-                        send_tg("❌ 点击按钮失败", server_name, before_lt)
-                
+                        log("ℹ️ 未检测到 Turnstile，直接继续")
+                        time.sleep(5)
+                    
+                    log("🔄 用 driver.refresh() 刷新页面验证续期结果...")
+                    try:
+                        driver.refresh()
+                        time.sleep(5)
+                    except Exception as e:
+                        log(f"⚠️ refresh 失败: {e}")
+                        time.sleep(10)
+                    
+                    after_lt, after_ls = get_remaining_time(driver)
+                    diff = after_ls - before_ls
+                    
+                    log(f"⏱️ 续期后时间: {after_lt} ({after_ls}秒)，增加: {diff}秒")
+                    
+                    if diff > 0:
+                        log(f"✅ 续期成功！时间增加 {diff}秒 ({before_lt} → {after_lt})")
+                        send_tg(f"✅ Pro续期成功 (+{diff}s)", server_name, after_lt)
+                    else:
+                        log(f"❌ 续期失败！时间减少 {abs(diff)}秒 ({before_lt} → {after_lt})")
+                        send_tg(f"❌ Pro续期失败 (-{abs(diff)}s)", server_name, after_lt)
+                else:
+                    log("❌ 点击按钮失败")
+                    send_tg("❌ 点击按钮失败", server_name, before_lt)
+            
             except Exception as e:
                 log(f"❌ 服务器 '{server_name}' 执行异常: {e}")
                 try:
@@ -361,6 +322,15 @@ def main():
                 except: pass
                 send_tg(f"❌ 执行异常: {e}", server_name)
                 break
+            finally:
+                if driver:
+                    try:
+                        driver.quit()
+                    except: pass
+                if sb:
+                    try:
+                        sb.quit()
+                    except: pass
 
 if __name__ == "__main__":
     main()
