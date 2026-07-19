@@ -350,31 +350,29 @@ def main():
                             log(f"🐛 点击后页面按钮: {modal_btns}")
                         except: pass
 
-                        # 处理弹窗: 优先级 Enable Ads > Confirm > Turnstile
-                        # 1. 如果有 "Enable Ads" 按钮, 先点它启用广告
+                        # ★ 关键修复: 不点 Enable Ads (那是首次设置广告的入口, 会取消当前续期)
+                        # 点 +90 min 后按钮会变成 'loading…' 表示续期已开始
+                        # 直接等 Turnstile 出现即可
+                        log("⏳ +90 min 已点击, 等待 loading 完成 + Turnstile 出现...")
+                        time.sleep(3)
+
+                        # 诊断: 打印点击 +90 min 后的按钮文字
                         try:
-                            enable_ads = sb.driver.execute_script("""
+                            after_btns = sb.driver.execute_script("""
                                 var btns = document.querySelectorAll('button');
+                                var arr = [];
                                 for (var i = 0; i < btns.length; i++) {
-                                    var t = (btns[i].innerText || '').trim().toLowerCase();
-                                    if (t.indexOf('enable ads') !== -1 || t.indexOf('start earning') !== -1) {
-                                        btns[i].scrollIntoView({block: 'center'});
-                                        btns[i].click();
-                                        return 'clicked:' + btns[i].innerText.trim();
+                                    var t = (btns[i].innerText || '').trim();
+                                    if (t && t.toLowerCase().indexOf('90') !== -1 || t.toLowerCase().indexOf('loading') !== -1) {
+                                        arr.push(t.substring(0, 80));
                                     }
                                 }
-                                return false;
+                                return arr;
                             """)
-                            if enable_ads:
-                                log(f"🎬 点击了 Enable Ads 按钮: {enable_ads}")
-                                time.sleep(5)  # 等广告流程启动
-                        except Exception as e:
-                            log(f"⚠️ Enable Ads 点击失败: {e}")
+                            log(f"🐛 +90 min 按钮当前文字: {after_btns}")
+                        except: pass
 
-                        # 2. 处理 "Maybe later" 等关闭弹窗 (不点, 直接关)
-                        #    不处理, 让它自己消失
-
-                        # 3. ★ 关键改进: 不调用 uc_gui_click_captcha (会让 Chrome 崩溃)
+                        # ★ 关键改进: 不调用 uc_gui_click_captcha (会让 Chrome 崩溃)
                         #    改用 uc_open_with_reconnect, SeleniumBase 会自动处理 Turnstile
                         log("⏳ 等待 Turnstile 出现 (最多 15 秒)...")
                         turnstile_appeared = False
@@ -442,8 +440,9 @@ def main():
                                 try:
                                     submit_clicked = sb.driver.execute_script("""
                                         var btns = document.querySelectorAll('button');
-                                        var keywords = ['confirm', 'submit', 'renew', 'claim', 'continue', 'ok', 'yes', 'verify', 'get free time', 'apply', 'watch', 'start', 'earn', '+ 90', '+90'];
-                                        var exclude = ['cancel', 'later', 'enable ads', 'sign out', 'back to'];
+                                        // ★ 只点明确的提交关键词, 不点 +90 (会重新触发)
+                                        var keywords = ['confirm', 'submit', 'renew', 'claim', 'continue', 'ok', 'yes', 'verify', 'get free time', 'apply'];
+                                        var exclude = ['cancel', 'later', 'enable ads', 'sign out', 'back to', '+ 90', '+90', 'watch ad', 'loading'];
                                         for (var i = 0; i < btns.length; i++) {
                                             var t = (btns[i].innerText || '').trim().toLowerCase();
                                             if (btns[i].disabled) continue;
@@ -468,24 +467,24 @@ def main():
                                     if submit_clicked:
                                         log(f"✅ 点击提交按钮: {submit_clicked}")
                                         time.sleep(8)  # 等后端处理
-
-                                        # 检查 modal 是否关闭
-                                        try:
-                                            modal_still = bool(sb.driver.execute_script("""
-                                                var btns = document.querySelectorAll('button');
-                                                for (var i = 0; i < btns.length; i++) {
-                                                    var t = (btns[i].innerText || '').trim().toLowerCase();
-                                                    if (t.indexOf('enable ads') !== -1 || t.indexOf('cancel') !== -1) return true;
-                                                }
-                                                return false;
-                                            """))
-                                            if not modal_still:
-                                                log("🎉 modal 已关闭, 续期已提交!")
-                                            else:
-                                                log("⚠️ modal 仍在, 可能需要再点其他按钮")
-                                        except: pass
                                     else:
-                                        log("⚠️ 未找到提交按钮, modal 按钮列表见上")
+                                        log("ℹ️ 没找到 Confirm/Submit 按钮, 续期可能已自动提交 (Livewire 自动确认)")
+
+                                    # 检查 modal 是否关闭
+                                    try:
+                                        modal_still = bool(sb.driver.execute_script("""
+                                            var btns = document.querySelectorAll('button');
+                                            for (var i = 0; i < btns.length; i++) {
+                                                var t = (btns[i].innerText || '').trim().toLowerCase();
+                                                if (t.indexOf('enable ads') !== -1 || t.indexOf('cancel') !== -1) return true;
+                                            }
+                                            return false;
+                                        """))
+                                        if not modal_still:
+                                            log("🎉 modal 已关闭, 续期已提交!")
+                                        else:
+                                            log("⚠️ modal 仍在, 可能需要再点其他按钮")
+                                    except: pass
                                 except Exception as e:
                                     log(f"⚠️ 点击提交按钮失败: {e}")
 
