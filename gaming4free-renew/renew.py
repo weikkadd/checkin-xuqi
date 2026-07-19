@@ -374,10 +374,11 @@ def main():
                         # 2. 处理 "Maybe later" 等关闭弹窗 (不点, 直接关)
                         #    不处理, 让它自己消失
 
-                        # 3. 等待 Turnstile + 处理后续
-                        log("⏳ 等待 Turnstile / 广告流程...")
-                        captcha_passed = False
-                        for tw in range(30):  # 30 秒等 Turnstile 出现
+                        # 3. ★ 关键改进: 不调用 uc_gui_click_captcha (会让 Chrome 崩溃)
+                        #    改用 uc_open_with_reconnect, SeleniumBase 会自动处理 Turnstile
+                        log("⏳ 等待 Turnstile 出现 (最多 15 秒)...")
+                        turnstile_appeared = False
+                        for tw in range(15):
                             time.sleep(1)
                             try:
                                 ts_present = bool(sb.driver.execute_script("""
@@ -386,34 +387,31 @@ def main():
                                         || (document.body && document.body.innerText.toLowerCase().indexOf("verify") !== -1);
                                 """))
                                 if ts_present:
-                                    log(f"🛡️ [第 {tw+1} 秒] 检测到 Turnstile，处理验证...")
-                                    sb.uc_gui_click_captcha()
-                                    log("✅ uc_gui_click_captcha 已执行")
-                                    captcha_passed = True
+                                    log(f"🛡️ [第 {tw+1} 秒] 检测到 Turnstile")
+                                    turnstile_appeared = True
                                     break
                             except Exception as e:
-                                err_msg = str(e)
-                                if "Connection refused" in err_msg or "Max retries exceeded" in err_msg:
-                                    log(f"💀 [第 {tw+1} 秒] 浏览器崩溃 (等待 Turnstile 时)")
-                                    captcha_passed = False
+                                if "Connection refused" in str(e):
+                                    log(f"💀 浏览器崩溃")
                                     break
-                                if tw % 5 == 0:
-                                    log(f"⚠️ [第 {tw+1} 秒] 异常: {err_msg[:100]}")
 
-                        # ★ 关键: uc_gui_click_captcha 后必须 reconnect (官方推荐)
-                        #    否则 driver 连接已断, 所有 execute_script 都失败
-                        time.sleep(3)  # 等 Turnstile 后端处理
+                        # ★ 用 uc_open_with_reconnect 重新打开页面
+                        # SeleniumBase 会在 reconnect 时自动处理 Turnstile (不崩溃)
+                        # reconnect_time=12 给足时间让 Turnstile 自然通过
+                        if turnstile_appeared:
+                            log("🔄 用 uc_open_with_reconnect 处理 Turnstile + 重连...")
+                        else:
+                            log("🔄 没检测到 Turnstile, 直接 reconnect 验证续期结果...")
 
-                        # 用 uc_open_with_reconnect 重新连接并打开页面
-                        log("🔄 用 uc_open_with_reconnect 重连浏览器...")
                         reconnect_ok = False
                         for reconnect_attempt in range(3):
                             try:
-                                sb.uc_open_with_reconnect(server_url, reconnect_time=8)
+                                log(f"🔄 第 {reconnect_attempt+1} 次 reconnect (reconnect_time=12)...")
+                                sb.uc_open_with_reconnect(server_url, reconnect_time=12)
                                 time.sleep(5)
                                 # 测试 driver 是否可用
                                 _ = sb.driver.title
-                                log(f"✅ 第 {reconnect_attempt+1} 次 reconnect 成功")
+                                log(f"✅ 第 {reconnect_attempt+1} 次 reconnect 成功, 页面标题: {_}")
                                 reconnect_ok = True
                                 break
                             except Exception as e:
@@ -422,10 +420,10 @@ def main():
 
                         if not reconnect_ok:
                             log("❌ 3 次 reconnect 都失败, 跳过本轮")
-                            send_tg(f"❌ 浏览器无法重连", server_name, before_lt)
+                            send_tg(f"❌ 浏览器无法重连 (Chrome 崩溃)", server_name, before_lt)
                             continue
 
-                        # 重连成功后, 检查是否有 Confirm/Submit 按钮 (modal 可能还在)
+                        # 重连成功后, 检查是否有 Confirm/Submit 按钮
                         try:
                             current_btns = sb.driver.execute_script("""
                                 var btns = document.querySelectorAll('button');
@@ -438,7 +436,7 @@ def main():
                             """)
                             log(f"🐛 reconnect 后可见按钮: {current_btns}")
 
-                            # 点击提交按钮
+                            # 点击提交按钮 (如果有)
                             submit_clicked = sb.driver.execute_script("""
                                 var btns = document.querySelectorAll('button');
                                 var keywords = ['confirm', 'submit', 'renew', 'claim', 'continue', 'ok', 'yes', 'verify', 'get free time', 'apply'];
