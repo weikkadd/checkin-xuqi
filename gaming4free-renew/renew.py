@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Gaming4Free Renew Pro v10 - 自动续期脚本
+- 支持方式A（URL + Cookie 分开）和方式B（多账号合并）
 - 单次点击 + Turnstile 验证 + 刷新验证
 - 多层冷却检测 (expires + cd + disabled)
 - Cloudflare Turnstile 自动处理
@@ -16,8 +17,13 @@ except ImportError:
     sys.exit(1)
 
 # ── 配置 ──────────────────────────────────────────────
+# 方式 A：URL + Cookie 分开（推荐单账号）
+RENEW_URL = os.environ.get("GAME4FREE_RENEW_URL","").strip()
+COOKIE = os.environ.get("GAME4FREE_COOKIE","").strip()
+
+# 方式 B：多账号合并（名称|||URL|||Cookie）
 ACCOUNTS = []
-for line in os.environ.get("GAME4FREE_ACCOUNT","").split("\n"):
+for line in os.environ.get("GAME4FREE_ACCOUNTS","").split("\n"):
     line = line.strip()
     if not line:
         continue
@@ -25,12 +31,22 @@ for line in os.environ.get("GAME4FREE_ACCOUNT","").split("\n"):
     if len(parts) >= 3:
         ACCOUNTS.append((parts[0].strip(), parts[1].strip(), parts[2].strip()))
 
-COOKIE = os.environ.get("GAME4FREE_COOKIE","")
+# 兼容旧版 GAME4FREE_ACCOUNT（名称|||slug|||邮箱）
+for line in os.environ.get("GAME4FREE_ACCOUNT","").split("\n"):
+    line = line.strip()
+    if not line:
+        continue
+    parts = line.split("|||")
+    if len(parts) >= 3:
+        # 检查是否是旧格式（3部分是邮箱）还是新格式（3部分是URL）
+        if "@" in parts[2] and not parts[1].startswith("http"):
+            # 旧格式：名称|||slug|||邮箱，需要拼接 URL
+            ACCOUNTS.append((parts[0].strip(), "https://control.gaming4free.net/server/" + parts[1].strip(), parts[2].strip()))
+
 TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN","")
 TG_CHAT_ID = os.environ.get("TG_CHAT_ID","")
 
 MAX_BROWSER_RETRIES = 3
-BASE_URL = "https://control.gaming4free.net/server/"
 
 # ── 工具函数 ──────────────────────────────────────────
 def log(msg):
@@ -169,13 +185,28 @@ def check_button_cooldown(sb):
 def main():
     log("========== 开始处理服务器账号 ==========")
     
-    if not ACCOUNTS:
-        log("❌ 未配置 GAME4FREE_ACCOUNT")
+    # 确定要处理的服务器列表
+    servers = []
+    
+    # 方式 A：URL + Cookie
+    if RENEW_URL and COOKIE:
+        # 从 URL 提取名称
+        server_name = "我的服务器"
+        if "/server/" in RENEW_URL:
+            slug = RENEW_URL.split("/server/")[1].split("/")[0]
+            server_name = f"服务器-{slug[:8]}"
+        servers.append((server_name, RENEW_URL, COOKIE))
+    
+    # 方式 B：多账号
+    for name, url, cookie in ACCOUNTS:
+        servers.append((name, url, cookie))
+    
+    if not servers:
+        log("❌ 未配置 GAME4FREE_RENEW_URL + GAME4FREE_COOKIE 或 GAME4FREE_ACCOUNTS")
+        log("请检查 Secrets 配置")
         sys.exit(1)
     
-    for server_name, server_slug, email in ACCOUNTS:
-        server_url = BASE_URL + server_slug
-        
+    for server_name, server_url, server_cookie in servers:
         for browser_attempt in range(MAX_BROWSER_RETRIES):
             sb = None
             try:
@@ -189,10 +220,10 @@ def main():
                     log(f"📄 当前页面标题: {sb.get_title()}")
                     
                     # 注入 Cookie
-                    if COOKIE:
+                    if server_cookie:
                         log("🍪 正在注入浏览器 Cookie 凭证...")
                         sb.driver.add_cookie({"name":"XSRF-TOKEN","value":"%22eyJpdiI6IjJhQ2R6ZmVnM2R4a0RjV09zZ3B3V1E9PSIsInZhbHVlIjoia3Z0Q3N3cG10ZlV5TnRrN0R3Q1FkU0Z4VjNpQkVJYjJjQlB3a2xkSEJ2eGJYR3l1UzNkQm91UmxVUjNqR1JhS21yYjN4eFRlU0JnZUJhNlBGM2x5a0dVZnVnZ3h6ZjR2YjB3c0JhZjhYU1h3aEh5N0xhT2JxT3JFZG5hVzBZT3V2S1EiLCJtYWMiOiI1M2YwNjM0ZjBiMWQ4ZjIyZmM2NjQ1Y2IyY2RhZWI4N2U1OGIyZjI5NjI4ZjJmYjI2MjA5YmVjZjQ4YjBhNDcyIiwidGFnIjoiIn0%22","domain":".gaming4free.net","path":"/","secure":True})
-                        sb.driver.add_cookie({"name":"g4f_session", "value":COOKIE, "domain":".gaming4free.net", "path":"/", "secure":True})
+                        sb.driver.add_cookie({"name":"g4f_session", "value":server_cookie, "domain":".gaming4free.net", "path":"/", "secure":True})
                         log("✅ Cookie 凭证注入完成")
                     
                     # 刷新页面让 Cookie 生效
