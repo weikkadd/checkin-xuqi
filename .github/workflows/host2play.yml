@@ -68,15 +68,12 @@ jobs:
             latest_version=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r .tag_name)
             echo "[INFO] 最新稳定版本: $latest_version"
             
-            # 下载并安装 sing-box
             curl -Lo sing-box.tar.gz "https://github.com/SagerNet/sing-box/releases/download/${latest_version}/sing-box-${latest_version#v}-linux-amd64.tar.gz"
             tar -xzf sing-box.tar.gz
             cp sing-box-*/sing-box .
             chmod +x sing-box
 
             echo "[INFO] 正在生成 sing-box 配置..."
-            # 这里使用您之前成功的配置生成逻辑 (假设是 TUIC 协议)
-            # 提取 TUIC 链接中的信息并生成 config.json
             UUID=$(echo $NODE_LINK | sed -n 's/.*tuic:\/\/\([^%]*\).*/\1/p')
             PASS=$(echo $NODE_LINK | sed -n 's/.*%3A\([^@]*\)@.*/\1/p')
             ADDR=$(echo $NODE_LINK | sed -n 's/.*@\([^:]*\):.*/\1/p')
@@ -84,26 +81,26 @@ jobs:
             SNI=$(echo $NODE_LINK | sed -n 's/.*sni=\([^&]*\).*/\1/p')
             
             cat <<EOF > config.json
-            {
-              "log": { "level": "info" },
-              "outbounds": [
-                {
-                  "type": "tuic",
-                  "tag": "proxy",
-                  "server": "$ADDR",
-                  "server_port": $PORT,
-                  "uuid": "$UUID",
-                  "password": "$PASS",
-                  "congestion_control": "bbr",
-                  "alpn": ["h3"],
-                  "tls": { "enabled": true, "server_name": "$SNI", "insecure": true }
-                }
-              ],
-              "inbounds": [
-                { "type": "socks", "tag": "socks-in", "listen": "127.0.0.1", "listen_port": 1080 }
-              ]
-            }
-            EOF
+{
+  "log": { "level": "info" },
+  "outbounds": [
+    {
+      "type": "tuic",
+      "tag": "proxy",
+      "server": "$ADDR",
+      "server_port": $PORT,
+      "uuid": "$UUID",
+      "password": "$PASS",
+      "congestion_control": "bbr",
+      "alpn": ["h3"],
+      "tls": { "enabled": true, "server_name": "$SNI", "insecure": true }
+    }
+  ],
+  "inbounds": [
+    { "type": "socks", "tag": "socks-in", "listen": "127.0.0.1", "listen_port": 1080 }
+  ]
+}
+EOF
             echo "[INFO] ✅ sing-box 配置已生成"
 
             echo "[INFO] 启动 sing-box..."
