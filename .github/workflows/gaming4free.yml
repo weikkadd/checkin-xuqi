@@ -17,15 +17,18 @@ jobs:
         with:
           lfs: false
 
-      - name: 强制修复 Python 文件换行符
+      - name: 从 git blob 恢复 renew.py（绕过 autocrlf）
         run: |
           cd gaming4free-renew
           # 检查文件是否被压缩
           LINE_COUNT=$(wc -l < renew.py)
           echo "renew.py has $LINE_COUNT lines"
           if [ "$LINE_COUNT" -lt 10 ]; then
-            echo "ERROR: File is corrupted, restoring from git..."
-            git checkout HEAD -- renew.py
+            echo "ERROR: File is corrupted, restoring from git blob..."
+            # 从 git blob 直接提取文件内容，绕过 checkout 的 autocrlf
+            COMMIT=$(git rev-parse HEAD)
+            git show "$COMMIT:gaming4free-renew/renew.py" > renew.py.tmp
+            mv renew.py.tmp renew.py
             LINE_COUNT=$(wc -l < renew.py)
             echo "Restored: $LINE_COUNT lines"
           fi
@@ -33,6 +36,7 @@ jobs:
           sed -i 's/\r$//' renew.py
           LINE_COUNT=$(wc -l < renew.py)
           echo "Final: $LINE_COUNT lines"
+          head -5 renew.py
 
       - name: 配置 Python
         uses: actions/setup-python@v4
