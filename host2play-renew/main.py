@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-host2play 自动续期脚本 (v4 最终修复版)
+host2play 自动续期脚本 (最终稳定版)
 =====================
-- 修复：GitHub Actions 环境下浏览器启动失败问题
-- 优化：增强 reCAPTCHA 识别稳定性
-- 新增：自动提取页面上的服务器号 (如 bof5032, mcf7047) 并显示时间
+- 修正：阈值设定为 25 小时，确保 8h 和 24h 账号都能触发续期
+- 修正：GitHub Actions 环境下浏览器启动失败问题 (Headless 模式)
+- 优化：自动提取服务器号 (如 bof5032, mcf7047) 并记录时间
 """
 
 import os
@@ -24,6 +24,9 @@ from datetime import datetime, timedelta, timezone
 RENEW_URL = os.getenv("H2P_RENEW_URL", "")
 COOKIE_STR = os.getenv("H2P_COOKIE", "")
 WARP_PROXY = os.getenv("WARP_PROXY", "")
+# ★ 续期阈值设定为 25 小时，确保您的两个账号都能触发
+RENEW_THRESHOLD_SECONDS = 25 * 3600
+
 MAX_RETRY = 5
 PAGE_TIMEOUT = 60
 TG_TOKEN = os.getenv("TG_BOT_TOKEN", "")
@@ -63,12 +66,6 @@ def tg(msg: str, silent: bool = False):
          )
     except: pass
 
-def screenshot(page, name: str):
-    p = SHOT_DIR / f"{datetime.now():%H%M%S}_{name}.png"
-    try: page.get_screenshot(str(p), full_page=True)
-    except: pass
-    return p
-
 def parse_expires(text: str) -> int:
     import re
     if not text: return -1
@@ -77,17 +74,13 @@ def parse_expires(text: str) -> int:
     return -1
 
 def get_server_info(page):
-    """提取服务器号和剩余时间"""
     server_id = "Unknown"
     expires_text = "Unknown"
     expires_sec = -1
     try:
-        # 1. 提取服务器号 (Renew server: xxxx)
         header = page.ele('tag:h2', timeout=5)
         if header and "Renew server" in header.text:
             server_id = header.text.split(":")[-1].strip()
-        
-        # 2. 提取剩余时间
         body_text = page.ele('tag:body').text
         import re
         m = re.search(r"Expires\s*in[:\s]*(\d{1,2}:\d{2}:\d{2})", body_text, re.IGNORECASE)
@@ -97,26 +90,20 @@ def get_server_info(page):
     except: pass
     return server_id, expires_text, expires_sec
 
-# ==========================================================
-# reCAPTCHA 音频识别
-# ==========================================================
 def solve_recaptcha_audio(page) -> bool:
     try:
         import speech_recognition as sr
         import pydub
     except: return False
-
     log.info("🤖 开始处理 reCAPTCHA...")
     checkbox_iframe = page.ele('css:iframe[src*="recaptcha/api2/banchor"]', timeout=10)
     if not checkbox_iframe: return False
-
     try:
         page.switch_to.frame(checkbox_iframe)
         checkbox = page.ele('css:.recaptcha-checkbox-checkmark', timeout=5)
         if checkbox: checkbox.click()
         page.switch_to.main_frame()
     except: pass
-
     time.sleep(3)
     for attempt in range(MAX_RETRY):
         try:
@@ -125,39 +112,32 @@ def solve_recaptcha_audio(page) -> bool:
                 iframes = page.eles('css:iframe[src*="recaptcha"]')
                 if len(iframes) >= 2: challenge_iframe = iframes[1]
             if not challenge_iframe: continue
-
             page.switch_to.frame(challenge_iframe)
             audio_btn = page.ele('css:.rc-button-audio', timeout=5)
             if audio_btn: audio_btn.click()
             else: 
                 page.switch_to.main_frame()
                 continue
-            
             time.sleep(3)
             audio_link = page.ele('css:.rc-audiochallenge-tdownload-link', timeout=5)
             if not audio_link:
                 page.switch_to.main_frame()
                 continue
-            
             audio_url = audio_link.attr('href')
             audio_file = SHOT_DIR / f"audio_{attempt}.mp3"
             resp = requests.get(audio_url, timeout=30)
             audio_file.write_bytes(resp.content)
-            
             wav_file = SHOT_DIR / f"audio_{attempt}.wav"
             pydub.AudioSegment.from_mp3(str(audio_file)).export(str(wav_file), format="wav")
-            
             recognizer = sr.Recognizer()
             with sr.AudioFile(str(wav_file)) as source:
                 text = recognizer.recognize_google(recognizer.record(source))
-            
             input_box = page.ele('css:#audio-response', timeout=5)
             if input_box:
                 input_box.input(text)
                 verify_btn = page.ele('css:#recaptcha-verify-button', timeout=5)
                 if not verify_btn: verify_btn = page.ele('css:.rc-button-goog-default', timeout=3)
                 if verify_btn: verify_btn.click()
-            
             page.switch_to.main_frame()
             time.sleep(3)
             return True
@@ -174,18 +154,12 @@ def inject_cookies(page, cookie_str: str):
             try: page.set.cookies({k.strip(): v.strip()})
             except: pass
 
-# ==========================================================
-# 主流程
-# ==========================================================
 def run_one(label: str, renew_url: str, cookie_str: str):
     from DrissionPage import ChromiumPage, ChromiumOptions
-    
     co = ChromiumOptions()
     co.headless()
     co.set_argument('--no-sandbox')
     co.set_argument('--disable-dev-shm-usage')
-    co.set_argument('--user-agent', 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36')
-    
     page = ChromiumPage(co)
     page.set.timeouts(PAGE_TIMEOUT)
     try:
@@ -195,17 +169,20 @@ def run_one(label: str, renew_url: str, cookie_str: str):
             inject_cookies(page, cookie_str)
             page.get(renew_url)
             time.sleep(5)
-
         server_id, old_time, old_sec = get_server_info(page)
-        log.info(f"👤 账号: {label} | 🆔 伺服器: {server_id} | ⏱️ 剩余: {old_time}")
+        
+        # ★ 阈值判断：如果剩余时间 > 25 小时，跳过续期
+        if old_sec > RENEW_THRESHOLD_SECONDS:
+            h = old_sec // 3600
+            log.info(f"✅ [{label}] {server_id} 剩余 {h}h > 25h 阈值, 跳过续期")
+            return {"label": label, "sid": server_id, "ok": True, "msg": f"跳过 ({h}h)", "new": f"{h}h"}
 
+        log.info(f"⏬ [{label}] {server_id} 剩余 {old_time} <= 25h, 开始续期...")
         renew_btn = page.ele('text:Renew server', timeout=10)
         if not renew_btn: renew_btn = page.ele('css:button', timeout=5)
         if not renew_btn: return {"label": label, "sid": server_id, "ok": False, "msg": "未找到 Renew 按钮"}
-
         renew_btn.click()
         time.sleep(3)
-
         if solve_recaptcha_audio(page):
             time.sleep(2)
             renew_modal_btn = page.ele('css:button.purple', timeout=5)
@@ -238,20 +215,13 @@ def run():
     accounts = collect_accounts()
     if not accounts: return False
     results = [run_one(label, url, ck) for label, url, ck in accounts]
-    
     ok_count = sum(1 for r in results if r.get("ok"))
     summary = [f"🎮 <b>host2play 续期</b>", f"⏰ {now_cn():%Y-%m-%d %H:%M:%S} (北京)", "", f"📊 总账号: {len(results)} | ✅ {ok_count} | ❌ {len(results)-ok_count}", ""]
     for r in results:
         status = "✅" if r.get("ok") else "❌"
         sid = r.get("sid", "Unknown")
-        if r.get("ok"):
-            summary.append(f"👤 <b>{r['label']}</b> ({sid}): ✅ {r['old']} → {r['new']}")
-        else:
-            summary.append(f"👤 <b>{r['label']}</b> ({sid}): ❌ {r.get('msg')}")
-    
-    final_msg = "\n".join(summary)
-    log.info("\n" + final_msg)
-    tg(final_msg)
+        summary.append(f"👤 <b>{r['label']}</b> ({sid}): {status} {r.get('msg', '成功') if not r.get('new') else r['new']}")
+    tg("\n".join(summary))
     return all(r.get("ok") for r in results)
 
 if __name__ == "__main__":
