@@ -310,22 +310,53 @@ def main():
                         log(f"⏳ 按钮冷却中，剩余 {remaining}秒，等待...")
                         time.sleep(min(remaining, 300))
                     
-                    # 点击 +90 min
+                    # 点击 +90 min — 用 Selenium 原生 click (isTrusted=true)
+                    # JS element.click() 在 Livewire 3 下 isTrusted=false 会被忽略
                     log("🖱️ 正在寻找并点击 +90 分钟续期按钮...")
-                    click_result = sb.driver.execute_script("""
-                        var btns = document.querySelectorAll('button');
-                        for (var i = 0; i < btns.length; i++) {
-                            var txt = (btns[i].innerText || btns[i].textContent || '').trim();
-                            if (txt.indexOf('90') !== -1 || txt.indexOf('+ 90') !== -1 || txt.indexOf('+90') !== -1) {
-                                btns[i].scrollIntoView({block: 'center'});
-                                btns[i].removeAttribute('disabled');
-                                btns[i].style.cssText += '; pointer-events:auto !important;';
-                                btns[i].click();
-                                return 'clicked:' + txt;
-                            }
-                        }
-                        return 'not-found';
-                    """)
+                    click_result = "not-found"
+                    try:
+                        # 用 XPath 找按钮, 然后用 Selenium 原生 click
+                        from selenium.webdriver.common.by import By
+                        xpath_candidates = [
+                            "//button[contains(., 'watch ad') and contains(., '90')]",
+                            "//button[contains(., '+ 90 min')]",
+                            "//button[contains(., '+90 min')]",
+                            "//button[contains(., '90 min') and not(contains(., '+0'))]",
+                        ]
+                        for xpath in xpath_candidates:
+                            try:
+                                btns = sb.driver.find_elements(By.XPATH, xpath)
+                                for btn in btns:
+                                    if btn.is_displayed() and btn.is_enabled():
+                                        log(f"🎯 找到按钮: {btn.text}, 用 Selenium 原生 click")
+                                        sb.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn)
+                                        time.sleep(0.3)
+                                        btn.click()  # ★ Selenium 原生 click, isTrusted=true
+                                        click_result = f"clicked:{btn.text}"
+                                        break
+                                if click_result != "not-found":
+                                    break
+                            except Exception as e:
+                                log(f"⚠️ XPath {xpath} 失败: {e}")
+                                continue
+                    except Exception as e:
+                        log(f"⚠️ Selenium 原生点击失败, fallback 到 JS: {e}")
+                        # Fallback: JS click
+                        if click_result == "not-found":
+                            click_result = sb.driver.execute_script("""
+                                var btns = document.querySelectorAll('button');
+                                for (var i = 0; i < btns.length; i++) {
+                                    var txt = (btns[i].innerText || btns[i].textContent || '').trim();
+                                    if (txt.indexOf('90') !== -1 || txt.indexOf('+ 90') !== -1 || txt.indexOf('+90') !== -1) {
+                                        btns[i].scrollIntoView({block: 'center'});
+                                        btns[i].removeAttribute('disabled');
+                                        btns[i].style.cssText += '; pointer-events:auto !important;';
+                                        btns[i].click();
+                                        return 'clicked:' + txt;
+                                    }
+                                }
+                                return 'not-found';
+                            """)
                     log(f"🎯 点击结果: {click_result}")
                     
                     if click_result == 'not-found':
