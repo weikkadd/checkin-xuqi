@@ -346,7 +346,7 @@ def run():
         time.sleep(random.uniform(5, 10)) # 账号间增加间隔
         
     ok_count = sum(1 for r in results if r.get("ok"))
-    summary = [f"🎮 <b>host2play 续期</b>", f"⏰ {now_cn():%Y-%m-%d %H:%M:%S} (北京)", "", f"📊 总账号: {len(results)} | ✅ {ok_count} | ❌ {len(results)-ok_count}", ""]
+    summary = [f"🎮 <b>host2play 续期</b>", f"⏰ {now_cn():%Y-%m-%d %H:%M:%S}", "", f"📊 总账号: {len(results)} | ✅ {ok_count} | ❌ {len(results)-ok_count}", ""]
     for r in results:
         status = "✅" if r.get("ok") else "❌"
         sid = r.get("sid", "Unknown")
