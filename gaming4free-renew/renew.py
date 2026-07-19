@@ -155,8 +155,18 @@ def main():
                         if diff > 3000:
                             log(f"✅ 第 {current_round} 轮成功！新时间: {after_lt}")
                             send_tg(f"✅ 续期成功 (第{current_round}轮)", server_name, after_lt)
+                            log("⏳ 续期成功，进入 5 分钟强制冷却期 (310秒)...")
+                            time.sleep(310)
+                            driver.refresh(); time.sleep(10)
                         else:
                             log(f"❌ 第 {current_round} 轮失败，时间未增加")
+                            # 失败时也检查一下是否是因为已经进入了冷却
+                            try:
+                                page_text = driver.execute_script("return document.body.innerText")
+                                if "cd" in page_text:
+                                    log("⚠️ 检测到已处于冷却状态，等待 310 秒...")
+                                    time.sleep(310); driver.refresh(); time.sleep(10)
+                            except: pass
                             # 失败后尝试重连浏览器环境
                             try: sb.uc_open_with_reconnect(server_url, reconnect_time=10); time.sleep(10)
                             except: pass
