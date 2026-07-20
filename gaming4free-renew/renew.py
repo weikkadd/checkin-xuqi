@@ -48,15 +48,15 @@ def main():
                     log(f"🌐 访问页面: {server_url}")
                     driver.get(server_url)
                     
-                        if server_cookie:
-                            log("🍪 注入 Cookie...")
-                            for item in server_cookie.split(";"):
-                                item = item.strip()
-                                if "=" in item:
-                                    name, value = item.split("=", 1)
-                                    try: driver.add_cookie({"name": name.strip(), "value": value.strip(), "domain": ".gaming4free.net", "path": "/"})
-                                    except: pass
-                            driver.refresh(); time.sleep(10)
+                    if server_cookie:
+                        log("🍪 注入 Cookie...")
+                        for item in server_cookie.split(";"):
+                            item = item.strip()
+                            if "=" in item:
+                                name, value = item.split("=", 1)
+                                try: driver.add_cookie({"name": name.strip(), "value": value.strip(), "domain": ".gaming4free.net", "path": "/"})
+                                except: pass
+                        driver.refresh(); time.sleep(10)
 
                     # 诊断: 检查页面状态
                     diag = driver.execute_script("""
