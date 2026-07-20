@@ -100,28 +100,26 @@ def do_rounds(dr,sn,sc):
                         log("✅ Turnstile 通过"); break
                     time.sleep(1)
         except: pass
-        log("🎬 等广告")
-        sw=time.time()
-        while time.time()-sw<90:
-            dr.execute_script("window.dispatchEvent(new Event('mousemove'));")
+        # 不依赖广告等待判断成功，直接等 Livewire 响应刷新页面时间
+        log("⏳ 等页面刷新 (30s)")
+        found=False
+        for _ in range(30):
+            time.sleep(1)
             try:
-                dr.execute_script("""
-                    var cb=document.querySelectorAll('[aria-label=Close],.modal-close');
-                    for(var i=0;i<cb.length;i++)if(cb[i].offsetParent!==null)cb[i].click();""")
+                al2,as2=get_time(dr)
+                if as2>bs+100:
+                    log(f"✅ 时间已增加 ({as2}s > {bs}s)")
+                    found=True; break
             except: pass
-            try:
-                ac=get_time(dr)
-                if ac[1]>bs+100: log(f"✅ 时间增加，提前跳出"); break
+        if not found:
+            try: dr.refresh(); time.sleep(5)
             except: pass
-            time.sleep(5)
-        try: dr.refresh(); time.sleep(5)
-        except: time.sleep(10)
-        al,as_=get_time(dr)
-        df=as_-bs
-        log(f"⏱️ 后: {al} ({as_}s), 增加: {df}s")
+            al2,as2=get_time(dr)
+        df=as2-bs
+        log(f"⏱️ 续期后: {al2} ({as2}s), 增加: {df}s")
         if df>0:
-            log(f"✅ 成功! +{df}s ({bl}→{al})")
-            send_tg(f"✅ Pro续期成功 (+{df}s)",sn,al); break
+            log(f"✅ 成功! +{df}s ({bl}→{al2})")
+            send_tg(f"✅ Pro续期成功 (+{df}s)",sn,al2); break
         else:
             log(f"❌ 失败，继续下一轮"); time.sleep(10)
 

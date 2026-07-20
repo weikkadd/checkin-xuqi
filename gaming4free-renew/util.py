@@ -29,7 +29,7 @@ def get_time(dr):
                 if any(kw in ll for kw in ['expire','remain','end','next','due']):
                     lt=re.findall(r'(\d{1,2}:\d{2}:\d{2})',line)
                     if lt:
-                        log(f"✅ 选中关键字附近: {lt[0]}")
+                        log(f"✅ 选中关键字附近: {lt[0]} (行: {line.strip()[:100]})")
                         return(lt[0],pars_s(lt[0]))
             log(f"⚠️ 未找到关键字，使用第一个: {tm[0]}")
             return(tm[0],pars_s(tm[0]))
