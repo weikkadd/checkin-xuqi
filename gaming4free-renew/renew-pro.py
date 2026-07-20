@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Gaming4Free Renew Pro v8 - 自动续期脚本增强版
+Gaming4Free Renew Pro v11 - 自动续期脚本增强版
+- 循环续期机制：低於目標時長時自動連續續期
 - 三层点击策略 (Livewire API + Event Dispatch + Native Click)
 - 广告DOM详细检测 (iframe, body text, ad elements)
 - Pro成功验证 (多重判断: 倒计时/Livewire/页面刷新/奖励状态)
@@ -31,10 +32,10 @@ for line in raw_accounts:
     if len(parts) == 2: ACCOUNTS.append((parts[0].strip(), parts[1].strip()))
 
 # ==================== Pro增强配置 ====================
-TARGET_SECONDS = 48 * 3600       # 目标时长: 48小时(秒)
+TARGET_SECONDS = 45 * 3600       # 目标时长: 45小时(秒)
 ADD_SECONDS = 90 * 60            # 每次续期增加: 90分钟(秒)
 COOLDOWN_SEC = 120               # 冷却时间: 120秒
-MAX_ROUNDS = 5                   # 最大轮次
+MAX_ROUNDS = 10                  # 最大轮次 (增加到10轮以确保达标)
 AD_WAIT_SEC = 240                # 广告最大等待时间 (Pro)
 VERIFY_TIMEOUT = 300             # 续期确认最长等待 (Pro)
 SUCCESS_ADD_SECONDS = 3000       # 成功最低增加时间 (Pro, 50分钟)
@@ -79,7 +80,7 @@ def send_tg(result, server_name="", expiry=""):
 {expiry}
 
 ⚙️模式:
-Renew-Pro v8
+Renew-Pro v11 (Auto-Loop)
 """
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
     data = urllib.parse.urlencode({"chat_id": TG_CHAT_ID, "text": msg}).encode()
@@ -232,915 +233,216 @@ def try_ad_controls(sb, ad_elapsed):
             log("尝试关闭广告控制元素")
         except Exception as e: log(f"⚠️ 尝试关闭广告控制失败: {e}")
 
-
-# ================================================================
-# Pro v7: 成功验证 + 页面恢复 + 广告卡死检测
-# ================================================================
-
 def verify_extend_success(sb, before_secs):
     """
     Gaming4Free Pro续期验证 - 多重判断
-    1. 倒计时增加
-    2. Livewire完成
-    3. 页面刷新
-    4. 奖励状态消失
     """
     log("🔍 Pro模式: 开始确认续期结果")
     start = time.time()
-
     while time.time() - start < VERIFY_TIMEOUT:
         try:
             text, secs = get_remaining_time(sb)
             log(f"⏱️ Pro检测: {text} ({secs-before_secs:+d}秒)")
-
-            # 时间增加达到阈值
             if secs >= before_secs + SUCCESS_ADD_SECONDS:
                 screenshot(sb, "success")
                 log(f"🎉 Pro确认成功: {text}")
                 return True, text
-
-            # 检查Livewire活动
-            req = sb.execute_script("return window.__reqs || [];")
-            if req:
-                log("📡 检测到Livewire活动")
-
-            # 检查奖励按钮状态
-            reward = sb.execute_script("""
-            let t=document.body.innerText;
-            return t.includes('Reward') || t.includes('Watching') || t.includes('Ad');
-            """)
-            if not reward:
-                log("🎁 广告奖励状态结束")
-
-        except Exception as e:
-            log(f"⚠️ Pro验证异常: {e}")
-
+            reward = sb.execute_script("let t=document.body.innerText; return t.includes('Reward') || t.includes('Watching') || t.includes('Ad');")
+            if not reward: log("🎁 广告奖励状态结束")
+        except Exception as e: log(f"⚠️ Pro验证异常: {e}")
         time.sleep(5)
-
     log("❌ Pro确认超时")
-    screenshot(sb, "verify-timeout")
     text, secs = get_remaining_time(sb)
     return False, text
-
 
 def detect_page_stuck(sb):
     """检测页面是否卡死"""
     try:
-        result = sb.execute_script("""
-        return {
-            ready: document.readyState,
-            text: document.body ? document.body.innerText.length : 0,
-            online: navigator.onLine
-        };
-        """)
+        result = sb.execute_script("return {ready: document.readyState, text: document.body ? document.body.innerText.length : 0, online: navigator.onLine};")
         if not result: return True
         if result["ready"] != "complete": return True
         if result["text"] < 50: return True
         if not result["online"]: return True
         return False
-    except Exception:
-        return True
-
+    except Exception: return True
 
 def recover_page(sb, url):
     """页面恢复"""
     log("♻️ Pro恢复模式启动")
     try:
-        screenshot(sb, "before-recover")
-        sb.refresh()
-        time.sleep(8)
-
-        # 检查页面
+        sb.refresh(); time.sleep(8)
         if detect_page_stuck(sb):
-            log("⚠️ 刷新后仍异常，重新打开页面")
-            sb.open(url, timeout=30)
-            time.sleep(8)
-
-        screenshot(sb, "after-recover")
+            sb.open(url, timeout=30); time.sleep(8)
         log("✅ 页面恢复完成")
         return True
-    except Exception as e:
-        log(f"❌ 页面恢复失败: {e}")
-        return False
-
-
-# ================================================================
-# Pro v8: Livewire 网络监听 + 真实method捕获 + 主动调用
-# ================================================================
+    except Exception as e: log(f"❌ 页面恢复失败: {e}"); return False
 
 def setup_livewire_listener(sb):
-    """拦截 Livewire 请求 - 捕获真实 method 和 wire:id"""
+    """拦截 Livewire 请求"""
     sb.execute_script("""
     window.__livewire_calls=[];
-    const oldFetch=window.fetch;
-    window.fetch=function(){
-        let args=arguments;
-        return oldFetch.apply(this,args)
-        .then(async function(resp){
-            try{
-                let clone=resp.clone();
-                let json=await clone.json();
-                window.__livewire_calls.push({
-                    url:args[0],
-                    time:Date.now(),
-                    data:json
-                });
-            }catch(e){}
-            return resp;
-        });
-    };
     const oldXHR=XMLHttpRequest.prototype.open;
     XMLHttpRequest.prototype.open=function(method,url){
-        this._url=url;
-        this._method=method;
+        this._url=url; this._method=method;
         this.addEventListener("load",function(){
-            try{
-                if(this.responseText.includes("serverMemo")){
-                    window.__livewire_calls.push({
-                        url:this._url,
-                        method:this._method,
-                        body:this.responseText
-                    });
-                }
-            }catch(e){}
+            try{ if(this.responseText.includes("serverMemo")){ window.__livewire_calls.push({url:this._url, method:this._method, body:this.responseText}); } }catch(e){}
         });
         return oldXHR.apply(this, arguments);
     };
     """)
     log("📡 Livewire 网络监听已启用")
 
-
 def analyze_livewire(sb):
-    """
-    自动寻找真实续期方法
-    从 __livewire_calls 中提取包含 serverMemo 的请求
-    """
+    """提取 Livewire 续期方法"""
     try:
         calls = sb.execute_script("return window.__livewire_calls || [];")
         if not calls: return None
-
         for item in calls:
-            text = str(item)
-
-            # 找 method 数组
-            m = re.findall(r'"methods"\s*:\s*\[\s*"([^"]+)"', text)
+            m = re.findall(r'"methods"\s*:\s*\[\s*"([^"]+)"', str(item))
             if m:
                 for meth in m:
-                    if meth not in POLLING_METHODS:
-                        log(f"📡 捕获Livewire方法: {meth}")
-                        return meth
-
-            # 找 serverMemo.data.methods
-            mm = re.findall(r'"methods"\s*:\s*\[(.*?)\]', text, re.DOTALL)
-            if mm:
-                for chunk in mm:
-                    found = re.findall(r'"([^"]+)"', chunk)
-                    for meth in found:
-                        if meth not in POLLING_METHODS:
-                            log(f"📡 捕获Livewire方法: {meth}")
-                            return meth
-
-    except Exception as e:
-        log(f"Livewire分析失败: {e}")
-
+                    if meth not in POLLING_METHODS: return meth
+    except: pass
     return None
 
+def find_component_id_by_selector(sb, selector):
+    return sb.execute_script(f"""
+        var el = document.querySelector('{selector}');
+        if(!el) return null;
+        var comp = el.closest('[wire\\\\:id]');
+        return comp ? comp.getAttribute('wire:id') : null;
+    """)
 
-def call_livewire_directly(sb, component_id, method_name):
-    """通过 Livewire API 直接调用后端方法"""
-    try:
-        result = sb.execute_script(f"""
+def call_livewire_directly(sb, comp_id, method):
+    log(f"🎯 直接调用 Livewire 方法: {method} (组件: {comp_id})")
+    return sb.execute_script(f"""
         if(window.Livewire){{
-            try {{
-                var comp = window.Livewire.find('{component_id}');
-                if(comp){{
-                    comp.call('{method_name}');
-                    return 'called';
-                }}
-                return 'no-comp';
-            }} catch(e) {{
-                return 'err:' + e.message;
-            }}
+            var c = Livewire.find('{comp_id}');
+            if(c) {{ c.call('{method}'); return 'success'; }}
         }}
-        return 'no-lw';
-        """)
-        log(f"🎯 Livewire直接调用结果: {result}")
-        return result
-    except Exception as e:
-        log(f"⚠️ Livewire直接调用失败: {e}")
-        return None
-
-
-def find_component_id_by_selector(sb, css_selector):
-    """通过CSS选择器找到元素的 wire:id"""
-    try:
-        elem = sb.find_element(By.CSS_SELECTOR, css_selector, timeout=5)
-        wire_id = sb.execute_script("""
-            var el = arguments[0];
-            while(el && !el.getAttribute('wire:id')) {
-                el = el.parentElement;
-            }
-            return el ? el.getAttribute('wire:id') : null;
-        """, elem)
-        log(f"🔗 找到组件ID: {wire_id}")
-        return wire_id
-    except Exception as e:
-        log(f"⚠️ 查找组件ID失败: {e}")
-        return None
-
+        return 'fail';
+    """)
 
 def is_driver_alive(sb):
-    """【新增】检测浏览器是否仍然正常运行 - 使用更宽松的检测方式"""
-    try:
-        url = sb.driver.current_url
-        if url: return True
-    except Exception: pass
-    try:
-        title = sb.driver.title
-        return True
-    except Exception: pass
-    try:
-        sb.driver.execute_script("return 1")
-        return True
-    except Exception:
-        return False
-
+    try: sb.driver.title; return True
+    except: return False
 
 def main():
-    """主函数: 遍历所有账号执行续期"""
-    if not ACCOUNTS:
-        log("❌ 未配置 GAME4FREE_ACCOUNT 环境变量，请在仓库 Settings → Secrets 中添加"); return
-
-    # Chrome 稳定性参数 (Pro优化)
     chrome_args = (
         "--no-sandbox,"
         "--disable-dev-shm-usage,"
         "--disable-gpu,"
-        "--disable-gpu-sandbox,"
-        "--disable-gpu-compositing,"
-        "--disable-extensions,"
-        "--disable-notifications,"
-        "--disable-infobars,"
-        "--no-first-run,"
-        "--disable-default-apps,"
-        "--disable-logging,"
-        "--disable-sync,"
-        "--disable-translate,"
-        "--disable-background-networking,"
-        "--disable-background-timer-throttling,"
-        "--disable-renderer-backgrounding,"
-        "--disable-backgrounding-occluded-windows,"
-        "--disable-hang-monitor,"
-        "--disable-popup-blocking,"
-        "--disable-component-update,"
-        "--disable-session-crashed-bubble,"
-        "--disable-accelerated-compositing,"
-        "--disable-accelerated-2d-canvas,"
-        "--disable-accelerated-video-decode,"
-        "--disable-accelerated-mjpeg-decode,"
         "--disable-blink-features=AutomationControlled,"
         "--window-size=1920,1080,"
         "--start-maximized"
     )
 
-    # 浏览器崩溃恢复机制
     max_browser_retries = 3
     browser_retry_delay = 10
 
     for server_name, server_url in ACCOUNTS:
         log(f"\n========== 开始处理服务器账号: {server_name} ==========")
-
+        
         for browser_attempt in range(max_browser_retries):
-            sb = None
             try:
-                log(f"🚀 正在启动浏览器 (第 {browser_attempt+1}/{max_browser_retries} 次尝试)...")
-
-                with SB(
-                    test=True,
-                    uc=False,
-                    headless=False,
-                    proxy=os.environ.get("PROXY_SERVER") if os.environ.get("IS_PROXY") == "true" else None,
-                    block_images=True,
-                    settings_file=None,
-                    recorder_ext=False,
-                    chromium_arg=chrome_args,
-                ) as sb:
-                    log(f"🌐 正在访问续期页面 (第 {browser_attempt+1}/{max_browser_retries} 次尝试): {server_url}")
-
-                    # 打开续期页面
-                    try:
-                        sb.open(server_url, timeout=30)
-                    except Exception as open_err:
-                        log(f"⚠️ 页面加载异常: {open_err}")
-                        raise RuntimeError("页面打开失败，请检查网络或代理设置")
-
+                with SB(test=True, uc=False, headless=False, block_images=True, chromium_arg=chrome_args) as sb:
+                    sb.open(server_url, timeout=30)
                     time.sleep(3)
-
-                    # 验证浏览器是否存活
-                    if not is_driver_alive(sb):
-                        log("❌ 浏览器在打开页面后意外停止响应")
-                        raise RuntimeError("浏览器启动后意外停止，请检查资源是否充足")
-
-                    # 验证页面是否加载成功
-                    try:
-                        title = sb.execute_script("return document.title || '';")
-                        log(f"📄 当前页面标题: {title}")
-                        if title: log("✅ 页面加载成功")
-                    except Exception as e:
-                        log(f"⚠️ 无法读取页面标题: {e}")
-
-                    # 注入 Cookie
+                    
                     if GF_COOKIE:
-                        log("🍪 正在注入浏览器 Cookie 凭证...")
-                        try:
-                            for cookie in GF_COOKIE.split(";"):
-                                if "=" in cookie:
-                                    name, value = cookie.split("=", 1)
-                                    cookie_dict = {"name": name.strip(), "value": value.strip(), "domain": ".gaming4free.net"}
-                                    sb.driver.add_cookie(cookie_dict)
-                            sb.open(server_url, timeout=30)
-                            time.sleep(3)
-                            log("✅ Cookie 凭证注入完成")
-                            # 【关键】Cookie 注入后等待足够时间让 Livewire/Alpine 完全渲染
-                            log("⏳ 等待 Livewire/Alpine 组件完全挂载...")
-                            for wi2 in range(10):
-                                try:
-                                    body_text = sb.execute_script("return document.body?document.body.innerText:'';");
-                                    if body_text and ('90' in body_text or 'extend' in body_text.lower()):
-                                        log(f"✅ 组件已挂载 ({wi2+1}秒)")
-                                        break
-                                except Exception: pass
-                                time.sleep(1)
-                        except Exception as e:
-                            log(f"⚠️ Cookie 注入失败: {e}")
+                        for cookie in GF_COOKIE.split(";"):
+                            if "=" in cookie:
+                                name, value = cookie.split("=", 1)
+                                sb.driver.add_cookie({"name": name.strip(), "value": value.strip(), "domain": ".gaming4free.net"})
+                        sb.open(server_url, timeout=30)
+                        time.sleep(5)
 
-                    # === Pro v8: 拦截 Livewire 请求 ===
                     setup_livewire_listener(sb)
-                    time.sleep(3)
-
                     handle_turnstile(sb)
 
-                    # 再次验证浏览器存活
-                    if not is_driver_alive(sb):
-                        raise RuntimeError("浏览器在处理人机验证后意外停止")
+                    current_round = 0
+                    while current_round < MAX_ROUNDS:
+                        current_round += 1
+                        log(f"\n🔄 --- 第 {current_round}/{MAX_ROUNDS} 轮续期流程 ---")
+                        
+                        before_text, before_secs = get_remaining_time(sb)
+                        log(f"⏱️ 当前剩余时长: {before_text} ({before_secs}秒)")
+                        
+                        if before_secs >= TARGET_SECONDS:
+                            log(f"✅ 目标时长已达标 ({TARGET_SECONDS//3600}小时)，停止续期")
+                            break
+                        
+                        btn_info = check_button_cooldown(sb)
+                        if btn_info and btn_info.get('cooldown'):
+                            wait_time = btn_info.get('remaining', COOLDOWN_SEC)
+                            log(f"⏳ 按钮冷却中，等待 {wait_time} 秒...")
+                            time.sleep(wait_time + 5)
+                            sb.refresh(); time.sleep(5)
+                            before_text, before_secs = get_remaining_time(sb)
 
-                    log(f"🔑 准备执行账号操作: {server_name}")
-
-                    # 【关键修复】等待 Livewire/Alpine 组件完全渲染
-                    log("⏳ 等待页面组件完全加载 (最多15秒)...")
-                    rendered = False
-                    for i in range(15):
-                        try:
-                            page_text = sb.execute_script("return document.body?document.body.innerText:'';")
-                            if '+90' in page_text or 'watch ad' in page_text.lower():
-                                rendered = True
-                                log(f"✅ 续期按钮已渲染 (耗时{i+1}秒)")
-                                break
-                        except Exception: pass
-                        time.sleep(1)
-
-                    if not rendered:
-                        log("⚠️ 超时未检测到续期按钮，尝试向下滚动触发懒加载...")
-                        sb.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                        time.sleep(2)
-                        sb.execute_script("window.scrollTo(0, 0);")
-                        time.sleep(2)
-
-                    screenshot(sb, "before-login")
-                    before_text, before_secs = get_remaining_time(sb)
-                    log(f"⏱️ 续期前剩余时长: {before_text} ({before_secs}秒)")
-
-                    btn_info = check_button_cooldown(sb)
-                    if btn_info and btn_info.get('cooldown'):
-                        log(f"⏳ 续期按钮冷却中: {btn_info.get('text')}")
-                        send_tg("按钮冷却中", server_name, before_text)
-                        continue
-                    # =============================================
-                    # 🖱️ Pro v10: Livewire HTTP API + 深度诊断
-                    # =============================================
-                    log("🖱️ 正在寻找并点击 +90 分钟续期按钮...")
-
-                    click_done = False
-
-                    # === Step 1: 深度诊断 — 找 wire:id + snapshot HTML ===
-                    try:
-                        log("🔍 Pro v10: 深度诊断...")
-
-                        diag_result = sb.execute_script("""
-                            (function() {
-                                var btns = document.querySelectorAll('button');
-                                for (var i = 0; i < btns.length; i++) {
-                                    var txt = (btns[i].textContent || '').trim();
-                                    if ((txt.includes('+90') || txt.includes('90 min')) && btns[i].offsetParent !== null) {
-                                        var comp = btns[i];
-                                        while (comp && !comp.getAttribute('wire:id')) {
-                                            comp = comp.parentElement;
-                                        }
-
-                                        var info = {
-                                            found: true, text: txt, className: btns[i].className,
-                                            disabled: btns[i].disabled, rect: btns[i].getBoundingClientRect ? JSON.stringify(btns[i].getBoundingClientRect()) : null,
-                                            parentTag: btns[i].parentElement ? btns[i].parentElement.tagName : '',
-                                            parentCls: btns[i].parentElement ? btns[i].parentElement.className : ''
-                                        };
-
-                                        if (comp) {
-                                            info.wireId = comp.getAttribute('wire:id');
-                                            info.componentAttrs = [];
-                                            for (var attr of comp.attributes) {
-                                                info.componentAttrs.push(attr.name + '=' + attr.value.substring(0,200));
-                                            }
-                                            info.hasSubmitHandler = !!comp.getAttribute('wire:submit');
-                                            info.submitMethod = comp.getAttribute('wire:submit');
-                                        }
-
-                                        if (window.Livewire) {
-                                            var comps = window.Livewire.all();
-                                            info.totalComponents = comps.length;
-                                            for (var c = 0; c < comps.length; c++) {
-                                                try {
-                                                    var snap = comps[c].snapshot;
-                                                    if (snap && snap.html && snap.html.indexOf(txt) !== -1) {
-                                                        info.matchingComponentIndex = c;
-                                                        info.matchingComponentId = comps[c].id;
-                                                        if (snap.serverMemo && snap.serverMemo.data) {
-                                                            var memo = snap.serverMemo.data;
-                                                            if (memo.effects) info.effects = JSON.stringify(memo.effects);
-                                                            if (memo.preloadAssets) {
-                                                                for (var p of memo.preloadAssets) {
-                                                                    if (p.url && p.url.indexOf('livewire') !== -1) info.livewireScriptUrl = p.url;
-                                                                }
-                                                            }
-                                                        }
-                                                        var idx = snap.html.indexOf(txt);
-                                                        if (idx !== -1) {
-                                                            info.contextHtml = snap.html.substring(Math.max(0,idx-200), Math.min(snap.html.length, idx+500));
-                                                        }
-                                                    }
-                                                } catch(e) {}
-                                            }
-                                        }
-
-                                        return JSON.stringify(info);
-                                    }
-                                }
-                                return JSON.stringify({found: false});
-                            })();
-                        """)
-                        log(f"   🔬 诊断结果: {diag_result}")
-
-                        import json
-                        try:
-                            d = json.loads(diag_result)
-                            if d.get('matchingComponentId'): log(f"   ✅ 匹配组件ID: {d['matchingComponentId']}")
-                            if d.get('wireId'): log(f"   ✅ wire:id: {d['wireId']}")
-                            if d.get('effects'): log(f"   📡 Effects: {d['effects'][:200]}")
-                            if d.get('contextHtml'): log(f"   📄 Context: ...{d['contextHtml']}...")
-                            if d.get('rect'): log(f"   📐 按钮位置: {d['rect']}")
-                        except: pass
-
-                        screenshot(sb, "button-diagnosis-v10")
-
-                    except Exception as e:
-                        log(f"   ⚠️ 诊断失败: {e}")
-
-                    # === Step 2: 通过 Livewire HTTP API 调用 extend ===
-                    try:
-                        log("📍 策略1: Livewire HTTP API 直接调用 extend...")
-
-                        component_id = sb.execute_script("""
-                            if (!window.Livewire) return null;
-                            var btns = document.querySelectorAll('button');
-                            var searchText = null;
-                            for (var i = 0; i < btns.length; i++) {
-                                var txt = (btns[i].textContent || '').trim();
-                                if ((txt.includes('+90') || txt.includes('90 min')) && btns[i].offsetParent !== null) {
-                                    searchText = txt;
-                                    break;
-                                }
-                            }
-                            if (!searchText) return null;
-                            var comps = window.Livewire.all();
-                            for (var c = 0; c < comps.length; c++) {
-                                try {
-                                    var snap = comps[c].snapshot;
-                                    if (snap && snap.html && snap.html.indexOf(searchText) !== -1) {
-                                        return comps[c].id;
-                                    }
-                                } catch(e) {}
-                            }
-                            return null;
-                        """)
-
-                        if component_id:
-                            log(f"   ✅ 找到组件ID: {component_id}")
-
-                            result = sb.execute_script(f"""
-                                (function() {{
-                                    if (!window.Livewire) return 'no-livewire';
-                                    var comps = window.Livewire.all();
-                                    var targetComp = null;
-                                    for (var c = 0; c < comps.length; c++) {{
-                                        if (comps[c].id === '{component_id}') {{
-                                            targetComp = comps[c];
-                                            break;
-                                        }}
-                                    }}
-                                    if (!targetComp) return 'no-target-component';
-                                    try {{
-                                        targetComp.call('extend');
-                                        return 'called-via-call';
-                                    }} catch(e) {{
-                                        return 'call-failed:' + e.message;
-                                    }}
-                                }})();
-                            """)
-                            log(f"   🎯 Livewire call 结果: {result}")
-
-                            if 'called' in str(result):
-                                click_done = True
-                                time.sleep(2)
-
-                                reqs = sb.execute_script("return (window.__reqs||[]).length;")
-                                log(f"   📡 Livewire requests captured: {reqs}")
-
-                                if reqs > 0:
-                                    log("   ✅ 确认 Livewire POST 请求已发出！")
-                                    screenshot(sb, "livewire-request-captured")
-                        else:
-                            log("   ⚠️ 未找到匹配的 Livewire 组件，尝试通用方法...")
-                            # Fallback: 遍历所有组件试 extend
-                            lw_result = sb.execute_script("""
-                                if (!window.Livewire) return 'no-lw';
-                                var comps = window.Livewire.all();
-                                for (var c = 0; c < comps.length; c++) {
-                                    try {
-                                        comps[c].call('extend');
-                                        return 'called-generic-' + c;
-                                    } catch(e) {}
-                                }
-                                return 'no-match-any';
-                            """)
-                            log(f"   🎯 通用 Livewire 结果: {lw_result}")
-                            if 'called' in str(lw_result):
-                                click_done = True
-                                time.sleep(2)
-
-                    except Exception as e:
-                        log(f"   ⚠️ 策略1失败: {e}")
-
-                    # === Step 3: dispatch livewire:submit 事件 ===
-                    if not click_done:
-                        try:
-                            log("📍 策略2: dispatch livewire:submit 事件...")
-                            elem = sb.find_element(By.CSS_SELECTOR, 'button.rt-btn-free', timeout=5)
-                            sb.execute_script("arguments[0].scrollIntoView({block:'center'});", elem)
-                            result = sb.execute_script("""
-                                var btn = arguments[0];
-                                btn.style.pointerEvents = 'auto';
-                                btn.removeAttribute('disabled');
-                                ['mousedown','mouseup','click'].forEach(function(type){
-                                    btn.dispatchEvent(new MouseEvent(type, {bubbles:true,cancelable:true,view:window}));
-                                });
-                                return 'events-dispatched';
-                            """, elem)
-                            log(f"   🎯 事件分发结果: {result}")
-                            click_done = True
-                            time.sleep(1)
-                        except Exception as e:
-                            log(f"   ⚠️ 策略2失败: {e}")
-
-                    # === Step 4: 纯 JS .click() 兜底 ===
-                    if not click_done:
-                        try:
-                            log("📍 策略3: 纯 JS .click() 兜底...")
-                            js_result = sb.execute_script("""
-                                var btns = document.querySelectorAll('button');
-                                for (var i = 0; i < btns.length; i++) {
-                                    if ((btns[i].textContent || '').indexOf('90') !== -1) {
-                                        btns[i].scrollIntoView({block: 'center'});
-                                        btns[i].removeAttribute('disabled');
-                                        btns[i].style.cssText += '; pointer-events:auto !important;';
-                                        btns[i].click();
-                                        return 'native-clicked:' + (btns[i].textContent || '').trim();
-                                    }
-                                }
-                                return 'not-found';
-                            """)
-                            log(f"🎯 兜底 click 结果: {js_result}")
-                            if 'native-clicked' in js_result:
-                                click_done = True
-                        except Exception as e:
-                            log(f"⚠️ 策略3失败: {e}")
-
-                    # === Pro v10 二次点击重试 ===
-                    if not click_done:
-                        log("⚠️ 第一次点击失败，Pro重新尝试")
-                        screenshot(sb, "click-failed")
-                        time.sleep(5)
-                        sb.refresh()
-                        time.sleep(10)
-                        js_result = sb.execute_script("""
-                        let btns=document.querySelectorAll('button');
-                        for(let b of btns){
-                            if(b.innerText.includes('90')){
-                                b.scrollIntoView({block:'center'});
-                                b.click();
-                                return b.innerText;
-                            }
-                        }
-                        return 'none';
-                        """)
-                        log(f"🔁 Pro二次点击: {js_result}")
-                        if js_result != "none":
-                            click_done = True
-
-                    if not click_done:
-                        log("❌ 所有点击策略均失败")
-                        screenshot(sb, "点击全部失败")
-                        send_tg("❌ 无法点击续期按钮", server_name, before_text)
-                        continue
-
-                    # 等待页面响应
-                    log("⏳ 等待页面响应 (最多10秒)...")
-                    responded = False
-                    for wi in range(10):
-                        time.sleep(1)
-                        page_after = sb.execute_script("return document.body?document.body.innerText:'';")
-                        match_new = re.search(r'(\d+:){2}\d+', page_after)
-                        if match_new:
-                            new_secs = parse_countdown_seconds(match_new.group(0))
-                            if new_secs > before_secs + 30:
-                                log(f"✅ 页面已响应！新时间: {match_new.group(0)}")
-                                responded = True
-                                break
-                    if not responded:
-                        log("ℹ️ 页面未在10秒内明显变化，继续检查 Turnstile...")
-
-                    screenshot(sb, "after-click-pre-check")
-
-                    # 检测并处理 Cloudflare Turnstile 弹窗
-                    log("🛡️ 检查 Turnstile...")
-                    def check_turnstile_present():
-                        return bool(sb.execute_script("""
-                            return !!document.querySelector('iframe[src*="challenges.cloudflare.com"]')
-                                || !!document.querySelector('.cf-turnstile')
-                                || !!document.querySelector('[class*="turnstile-"]')
-                                || !!document.querySelector('[data-testid="turnstile-widget"]')
-                                || !!document.querySelector('[aria-label="Security verification"]');
-                        """))
-
-                    if check_turnstile_present():
-                        log("⏳ 检测到 Turnstile 弹窗！")
-                        screenshot(sb, "turnstile-detected")
-                        sb.execute_script("""
-                            var turnstiles = document.querySelectorAll('.cf-turnstile > div');
-                            for (var t = 0; t < turnstiles.length; t++) {
-                                var boxes = turnstiles[t].querySelectorAll('span[role="checkbox"]');
-                                if (boxes.length > 0) { boxes[0].click(); break; }
-                            }
-                            if (turnstiles.length > 0) { turnstiles[0].click(); }
-                        """)
-                        for vi in range(15):
-                            time.sleep(1)
-                            if not check_turnstile_present():
-                                log(f"✅ Turnstile 验证已通过 ({vi+1}秒)")
-                                break
-                        else:
-                            log("⚠️ Turnstile 验证超时")
-                            screenshot(sb, "turnstile-timeout")
-                    else:
-                        log("✅ 未检测到 Turnstile")
-
-                    # === Pro v8: 点击后主动调用 Livewire ===
-                    method = analyze_livewire(sb)
-                    if method:
-                        log(f"🎯 Pro发现续期方法: {method}")
-                        # 尝试找到组件ID
-                        comp_id = find_component_id_by_selector(sb, 'button.rt-btn-free')
+                        # 点击策略
+                        click_done = False
+                        # 策略1: 直接调用 Livewire
+                        comp_id = find_component_id_by_selector(sb, 'button:contains("90")')
+                        if not comp_id: comp_id = find_component_id_by_selector(sb, 'button.rt-btn-free')
+                        
                         if comp_id:
-                            call_livewire_directly(sb, comp_id, method)
+                            res = call_livewire_directly(sb, comp_id, 'extend')
+                            if res == 'success': click_done = True
+                        
+                        # 策略2: 模拟点击
+                        if not click_done:
+                            try:
+                                sb.click('button:contains("90")', timeout=5)
+                                click_done = True
+                            except: pass
+                        
+                        if not click_done:
+                            log("❌ 无法点击续期按钮，尝试刷新页面...")
+                            sb.refresh(); time.sleep(5); continue
+
+                        # 等待广告和验证
+                        live_text, ad_res = wait_ad_flow(sb, before_secs, AD_WAIT_SEC)
+                        ok, verify_text = verify_extend_success(sb, before_secs)
+                        
+                        if ok:
+                            log(f"✅ 第 {current_round} 轮续期成功: {verify_text}")
+                            send_tg(f"✅ 续期成功 (第{current_round}轮)", server_name, verify_text)
                         else:
-                            # 通用调用
-                            sb.execute_script(f"""
-                                if(window.Livewire){{
-                                    let comps=Livewire.all();
-                                    if(comps.length>0){{
-                                        comps[0].call("{method}");
-                                        return "called";
-                                    }}
-                                }}
-                                return "no";
-                            """)
+                            log(f"❌ 第 {current_round} 轮续期失败")
+                            send_tg(f"❌ 续期失敗 (第{current_round}轮)", server_name, verify_text)
+                            recover_page(sb, server_url); time.sleep(5)
+                        
+                        # 每一轮结束后刷新页面，确保状态同步
+                        sb.refresh(); time.sleep(5)
 
-                    # === 进入广告观看流程 ===
-                    live_text, res = wait_ad_flow(sb, before_secs, AD_WAIT_SEC)
-
-                    # === Pro 最终确认 ===
-                    ok, verify_text = verify_extend_success(sb, before_secs)
-
-                    if ok:
-                        log(f"✅ Pro续期成功: {verify_text}")
-                        send_tg("✅ Pro续期成功", server_name, verify_text)
-                    else:
-                        log(f"❌ Pro续期失败: {verify_text}")
-                        send_tg("❌ Pro续期失败", server_name, verify_text)
-
-                        # Pro v7: 失败自动重试
-                        if RETRY_AFTER_FAIL:
-                            log("♻️ Pro模式: 失败自动重试...")
-                            recover_page(sb, server_url)
-                            time.sleep(5)
-                            continue  # 重新执行整个流程
-
-            except RuntimeError as e:
-                log(f"❌ 浏览器进程崩溃: {e}")
-                if browser_attempt < max_browser_retries - 1:
-                    log(f"⏳ 等待 {browser_retry_delay} 秒后重新启动浏览器...")
-                    time.sleep(browser_retry_delay)
-                    continue
-                else:
-                    log("❌ 浏览器连续崩溃")
-                    send_tg("❌ 浏览器连续崩溃", server_name)
-                    break
+                    log(f"🏁 账号 {server_name} 处理结束")
+                    break # 处理完当前账号，跳出浏览器重试循环
 
             except Exception as e:
-                log(f"❌ 服务器 '{server_name}' 执行过程中发生异常: {e}\n{traceback.format_exc()}")
-                try:
-                    screenshot(sb, "错误截图")
-                except: pass
-                send_tg(f"❌ 执行异常: {e}", server_name)
-                break
-
+                log(f"❌ 运行异常: {e}"); time.sleep(browser_retry_delay)
 
 def wait_ad_flow(sb, before_secs, max_wait=AD_WAIT_SEC):
-    """等待广告流程完成，监控续期结果 (Pro增强版)"""
-    result = {'extend_seen': False, 'reward_ready': False, 'ad_seen': False, 'live_text': '', 'live_secs': 0}
-    log(f"🎬 进入广告观看流程 (最长 {max_wait}秒, 期间不刷新页面)...")
-
-    # === 【调试】广告 DOM 检测 ===
-    try:
-        log("===== 广告DOM检测 =====")
-
-        # 检测 iframe
-        iframes = sb.execute_script("""
-            (function() {
-                var ifs = document.querySelectorAll('iframe');
-                var info = [];
-                for (var i = 0; i < ifs.length; i++) {
-                    info.push({
-                        index: i,
-                        src: ifs[i].src || '(no src)',
-                        width: ifs[i].offsetWidth,
-                        height: ifs[i].offsetHeight,
-                        visible: (ifs[i].offsetParent !== null)
-                    });
-                }
-                return JSON.stringify(info);
-            })();
-        """)
-        log(f"📺 iframe详情: {iframes}")
-
-        # 检测页面文本
-        body_text = sb.execute_script("return document.body?document.body.innerText.substring(0,1000):'';")
-        log(f"📄 页面文本前1000字符:\n{body_text[:500]}...")
-
-        # 检测包含 "ad" 或 "Watching" 的元素
-        ad_elements = sb.execute_script("""
-            (function() {
-                var all = document.querySelectorAll('*');
-                var ads = [];
-                for (var i = 0; i < all.length; i++) {
-                    var txt = (all[i].textContent || '').toLowerCase();
-                    if ((txt.indexOf('ad') !== -1 || txt.indexOf('watching') !== -1) && all[i].offsetParent !== null) {
-                        ads.push({
-                            tag: all[i].tagName,
-                            cls: all[i].className || '',
-                            text: (all[i].textContent || '').substring(0,100).trim()
-                        });
-                    }
-                }
-                return JSON.stringify(ads.slice(0, 10));
-            })();
-        """)
-        log(f"🔍 广告相关元素: {ad_elements}")
-
-    except Exception as e:
-        log(f"⚠️ 广告DOM检测失败: {e}")
-
-    # === 截图：广告流程开始时 ===
-    screenshot(sb, "ad-flow-start")
-
+    result = {'live_text': '', 'live_secs': 0}
     t0 = time.time()
-    clicked_again = False
-    alpine_logged = 0
-    ad_first_seen = None
-
     while time.time() - t0 < max_wait:
         elapsed = time.time() - t0
-
-        # === Pro广告卡死检测 ===
-        if int(elapsed) % 20 == 0:
-            try:
-                if detect_page_stuck(sb):
-                    log("⚠️ 检测到广告页面可能卡死")
-                    screenshot(sb, "ad-stuck")
-                    break
-            except Exception as e:
-                log(f"广告检测异常: {e}")
-
-        try:
-            calls = sb.execute_script(
-                "(function(){ return (window.__reqs||[]).filter(function(r){"
-                "return r.m==='POST' && /livewire/i.test(r.u) && (r.methods||[]).length>0;"
-                "}).map(function(r){ return {methods: r.methods}; }); })();"
-            ) or []
-        except Exception as e: log(f"⚠️ 获取 Livewire 调用失败: {e}"); calls = []
-        real_methods = []
-        for c in calls:
-            for m in (c.get('methods') or []):
-                if m not in POLLING_METHODS and m not in real_methods: real_methods.append(m)
-        if real_methods:
-            log(f"✅ 捕获到真实的 Livewire 续期请求: method={real_methods}")
-            result['extend_seen'] = True
-            screenshot(sb, "extend-call")
-            time.sleep(3)
-            lt, ls = get_remaining_time(sb)
-            if ls > before_secs + 60:
-                log(f"🎉 页面已自动刷新剩余时间: {lt}")
-                result['live_text'], result['live_secs'] = lt, ls
-                break
-        st = read_alpine_state(sb)
-        if st:
-            if st.get('adRewardReady') is True and not result['reward_ready']:
-                result['reward_ready'] = True
-                log(f"🎁 [{int(elapsed)}秒] adRewardReady=true — 广告奖励已就绪!")
-            elif alpine_logged < 2:
-                log(f"🔬 Alpine框架[{int(elapsed)}秒]: 未获取到组件状态")
-                alpine_logged += 1
-        ad = detect_ad(sb)
-        if ad and not result['ad_seen']:
-            result['ad_seen'] = True
-            ad_first_seen = time.time()
-            log(f"🎬 [{int(elapsed)}秒] 检测到广告播放: {ad}")
-            screenshot(sb, "ad-showing")
-
-            # 【调试】广告开始5秒后截图
-            time.sleep(5)
-            screenshot(sb, "ad-playing-5s")
-
-        if result['reward_ready'] and not clicked_again:
-            clicked_again = True
-            log("🎁 广告奖励已就绪！等待 5 分钟冷却结束...")
-
-            # 【关键修复】只需等待冷却结束，无需二次点击
-            # 系统会在冷却完成后自动续期
-            for ci in range(300):  # 最多等 5 分钟 (300 * 10秒)
-                cooldown_info = check_button_cooldown(sb)
-                if cooldown_info and cooldown_info.get('cooldown'):
-                    remaining = cooldown_info.get('remaining', '?')
-                    log(f"   ⏳ 按钮冷却中，剩余 {remaining}秒")
-                    time.sleep(10)
-                    continue
-                else:
-                    log("✅ 按钮冷却已结束，等待续期生效...")
-                    break
-
-            # 再等 30 秒让系统完成续期
-            log("⏳ 等待续期生效 (30秒)...")
-            time.sleep(30)
-
-            # 检查最终结果
-            lt, ls = get_remaining_time(sb)
-            if ls > before_secs + 3000:  # 增加了至少 50 分钟
-                log(f"🎉 续期成功！新时间: {lt} ({ls//3600}小时{ls%3600//60}分)")
-                result['live_text'], result['live_secs'] = lt, ls
-            else:
-                log(f"⚠️ 续期可能失败。当前时间: {lt} ({ls//3600}小时{ls%3600//60}分)，期望增加3000秒以上")
-                result['live_text'], result['live_secs'] = lt, ls
-
-            continue
-
-        # 定期检查剩余时间变化
-        if int(time.time() - t0) % 10 == 0 and time.time() - t0 > 5:
-            try:
-                lt, ls = get_remaining_time(sb)
-                if ls > before_secs + 60:
-                    log(f"🎉 [{int(time.time()-t0)}秒] 页面时间已自动更新: {lt}")
-                    result['live_text'], result['live_secs'] = lt, ls
-                    break
-            except Exception as e:
-                log(f"⚠️ 实时时间检查失败: {e}")
-
-        time.sleep(1)
-
-    # 【关键修复】确保函数总有返回值
-    if not result['live_text']:
+        if int(elapsed) % 20 == 0 and detect_page_stuck(sb): break
+        
         lt, ls = get_remaining_time(sb)
-        result['live_text'], result['live_secs'] = lt, ls
-
+        if ls > before_secs + 3000:
+            result['live_text'], result['live_secs'] = lt, ls
+            break
+        
+        # 处理可能的冷却等待
+        cooldown_info = check_button_cooldown(sb)
+        if cooldown_info and cooldown_info.get('cooldown'):
+            log(f"   ⏳ 按钮进入冷却，等待续期生效...")
+            time.sleep(30)
+            break
+            
+        time.sleep(2)
     return result['live_text'], result
-
 
 if __name__ == "__main__":
     main()

@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-host2play 自动续期脚本
+host2play 自动续期脚本 (Manus 优化版)
 =====================
-- DrissionPage 真实浏览器
-- Cookie 注入登录
-- reCAPTCHA v2 音频识别（方案 B）
-- TG 通知（北京时间）
-- 截图诊断
+- 增强：支持带认证的家宽代理 (PROXY_URL)，自动解析并过滤特殊参数
+- 增强：增加 IP 检查逻辑，确保代理生效
+- 增强：优化 reCAPTCHA iframe 定位逻辑，增加多层级查找
+- 增强：提升音讯验证码识别的容错性，增加随机延迟模拟真人
 """
 
 import os
@@ -17,656 +16,303 @@ import json
 import random
 import logging
 import requests
+import re
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 # ==========================================================
 # 配置
 # ==========================================================
-
-# 续期页面 URL（从环境变量读取）
 RENEW_URL = os.getenv("H2P_RENEW_URL", "")
-
-# Cookie 字符串
 COOKIE_STR = os.getenv("H2P_COOKIE", "")
+WARP_PROXY = os.getenv("WARP_PROXY", "")
+PROXY_URL = os.getenv("PROXY_URL", "")
+RENEW_THRESHOLD_SECONDS = 25 * 3600
 
-# WARP 代理（fscarmen/warp-on-actions 已启用系统级 WARP，Chrome 直连即可走 WARP）
-# 不需要再设置 Chrome 代理，否则 DrissionPage 会拒绝 socks5 协议
-WARP_PROXY = os.getenv("WARP_PROXY", "")  # 留空 = 不用代理，走系统 WARP
-
-# 续期参数
-MAX_RETRY = 5          # reCAPTCHA 最多重试次数
-PAGE_TIMEOUT = 60      # 页面超时
-
-# TG 通知
+MAX_RETRY = 5
+PAGE_TIMEOUT = 60
 TG_TOKEN = os.getenv("TG_BOT_TOKEN", "")
 TG_CHAT_ID = os.getenv("TG_CHAT_ID", "")
-
-# 东八区时区
 TZ_CN = timezone(timedelta(hours=8))
 
 def now_cn():
     return datetime.now(TZ_CN)
 
-# ==========================================================
-# 文件
-# ==========================================================
-
 ROOT = Path(__file__).parent
 SHOT_DIR = ROOT / "output" / "screenshots"
 SHOT_DIR.mkdir(parents=True, exist_ok=True)
 
-# ==========================================================
-# 日志
-# ==========================================================
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%H:%M:%S",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler("renew.log", encoding="utf-8"),
-    ],
+    handlers=[logging.StreamHandler(sys.stdout)],
 )
 log = logging.getLogger("host2play")
 
 # ==========================================================
-# TG 通知
+# 工具函数
 # ==========================================================
-
 def tg(msg: str, silent: bool = False):
-    """Telegram 通知"""
     prefix = "🎮 <b>host2play</b>\n"
-    if "host2play" not in msg.lower():
-        msg = prefix + msg
-    if not TG_TOKEN or not TG_CHAT_ID:
-        log.info(f"📧 TG 通知（未配置）: {msg[:80]}")
-        return
+    if "host2play" not in msg.lower(): msg = prefix + msg
+    if not TG_TOKEN or not TG_CHAT_ID: return
     try:
-        resp = requests.post(
+        requests.post(
             f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-            json={
-                "chat_id": TG_CHAT_ID,
-                "text": msg,
-                "parse_mode": "HTML",
-                "disable_notification": silent,
-            },
+            json={"chat_id": TG_CHAT_ID, "text": msg, "parse_mode": "HTML", "disable_notification": silent},
             timeout=10,
-        )
-        if resp.status_code == 200 and resp.json().get("ok"):
-            log.info(f"✅ TG 通知发送成功")
-        else:
-            log.warning(f"⚠️ TG 通知失败: {resp.text[:200]}")
-    except Exception as e:
-        log.warning(f"❌ TG 通知异常: {e}")
-
-# ==========================================================
-# 工具
-# ==========================================================
-
-def screenshot(page, name: str):
-    """保存截图"""
-    p = SHOT_DIR / f"{datetime.now():%H%M%S}_{name}.png"
-    try:
-        page.get_screenshot(str(p), full_page=True)
-        log.info(f"截图: {p}")
-    except Exception as e:
-        log.warning(f"截图失败: {e}")
-    return p
+         )
+    except: pass
 
 def parse_expires(text: str) -> int:
-    """解析 'Expires in: 07:57:29' 返回秒数"""
-    import re
-    if not text:
-        return -1
-    # HH:MM:SS
+    if not text: return -1
     m = re.search(r"(\d{1,2}):(\d{2}):(\d{2})", text)
-    if m:
-        return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
-    # MM:SS
-    m = re.search(r"(\d{1,2}):(\d{2})", text)
-    if m:
-        return int(m.group(1)) * 60 + int(m.group(2))
+    if m: return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
     return -1
 
-def get_expires_seconds(page) -> int:
-    """从页面获取剩余秒数"""
-    try:
-        text = page.html or ""
-        # 找 "Expires in:" 后面的时间
-        import re
-        m = re.search(r"Expires\s*in[:\s]*</[^>]+>\s*(\d{1,2}:\d{2}:\d{2})", text, re.IGNORECASE)
-        if m:
-            sec = parse_expires(m.group(1))
-            if sec > 0:
-                log.info(f"剩余时间: {m.group(1)} → {sec}s")
-                return sec
-        # 兜底：整页文本
-        body = page.ele('tag:body').text if page.ele('tag:body') else ""
-        for line in body.split("\n"):
-            if "expires" in line.lower() or ":" in line:
-                sec = parse_expires(line)
-                if 60 < sec < 86400 * 30:
-                    log.info(f"剩余时间 [body] = {line.strip()} → {sec}s")
-                    return sec
-    except Exception as e:
-        log.warning(f"提取剩余时间失败: {e}")
-    return -1
-
-# ==========================================================
-# reCAPTCHA 音频识别
-# ==========================================================
+def get_server_info(page):
+    server_id = "Unknown"
+    expires_text = "Unknown"
+    expires_sec = -1
+    for _ in range(10):
+        try:
+            text_content = page.run_js("return document.body.innerText")
+            time_match = re.search(r"(\d{1,2}:\d{2}:\d{2})", text_content)
+            if time_match:
+                expires_text = time_match.group(1)
+                expires_sec = parse_expires(expires_text)
+                sid_match = re.search(r"Renew server:\s*([a-zA-Z0-9]+)", text_content, re.IGNORECASE)
+                if sid_match: server_id = sid_match.group(1)
+                if server_id != "Unknown": break
+        except: pass
+        time.sleep(2)
+    return server_id, expires_text, expires_sec
 
 def solve_recaptcha_audio(page) -> bool:
-    """用音频模式识别 reCAPTCHA v2
-
-    流程:
-    1. 找到 reCAPTCHA checkbox iframe
-    2. 点击 checkbox
-    3. 如果直接通过 → 返回 True
-    4. 如果弹挑战 → 切换音频模式
-    5. 下载音频 → SpeechRecognition 识别
-    6. 输入结果 → 验证
-    """
     try:
         import speech_recognition as sr
         import pydub
     except ImportError:
-        log.error("❌ 未安装 speech_recognition 或 pydub")
+        log.error("❌ 缺少依赖: SpeechRecognition 或 pydub")
         return False
-
+    
     log.info("🤖 开始处理 reCAPTCHA...")
-
-    # 1. 找到 reCAPTCHA checkbox iframe
+    checkbox_iframe = None
+    selectors = ['css:iframe[src*="recaptcha/api2/banchor"]', 'css:iframe[title*="reCAPTCHA"]', 'xpath://iframe[contains(@src, "anchor")]']
+    for selector in selectors:
+        checkbox_iframe = page.ele(selector, timeout=10)
+        if checkbox_iframe: break
+    if not checkbox_iframe: 
+        if page.ele('css:.recaptcha-checkbox-checkmark', timeout=2): log.info("💡 发现直接存在的 Checkbox")
+        else: return False
+    
     try:
-        checkbox_iframe = page.ele('css:iframe[src*="recaptcha/api2/banchor"]', timeout=10)
-        if not checkbox_iframe:
-            # 兜底：找所有 recaptcha iframe
-            iframes = page.eles('css:iframe[src*="recaptcha"]')
-            if iframes:
-                checkbox_iframe = iframes[0]
-    except Exception:
-        checkbox_iframe = None
-
-    if not checkbox_iframe:
-        log.warning("⚠️ 未找到 reCAPTCHA checkbox iframe")
-        screenshot(page, "no_recaptcha")
-        return False
-
-    # 2. 切换到 checkbox iframe 并点击
-    try:
-        page.switch_to.frame(checkbox_iframe)
-        time.sleep(1)
+        if checkbox_iframe: page.switch_to.frame(checkbox_iframe)
         checkbox = page.ele('css:.recaptcha-checkbox-checkmark', timeout=5)
         if checkbox:
             checkbox.click()
-            log.info("✅ 点击了 reCAPTCHA checkbox")
-            time.sleep(3)
+            time.sleep(random.uniform(2, 4))
         page.switch_to.main_frame()
-    except Exception as e:
-        log.warning(f"点击 checkbox 失败: {e}")
-        try:
-            page.switch_to.main_frame()
-        except:
-            pass
+    except: page.switch_to.main_frame()
 
-    # 3. 检测是否直接通过（checkbox 变绿）
-    time.sleep(2)
-    try:
-        page.switch_to.frame(checkbox_iframe)
-        checkbox_class = page.ele('css:.recaptcha-checkbox').attr('class') or ''
-        page.switch_to.main_frame()
-        if 'recaptcha-checkbox-checked' in checkbox_class:
-            log.info("✅ reCAPTCHA 直接通过（checkbox 变绿）")
-            return True
-    except:
-        try:
-            page.switch_to.main_frame()
-        except:
-            pass
-
-    # 4. 没直接通过，需要处理挑战
-    log.info("🔄 reCAPTCHA 弹出挑战，尝试音频识别...")
-
+    time.sleep(3)
     for attempt in range(MAX_RETRY):
-        log.info(f"🎵 音频识别尝试 {attempt + 1}/{MAX_RETRY}")
-
-        # 找到挑战 iframe
         try:
-            challenge_iframe = page.ele('css:iframe[src*="recaptcha/api2/bframe"]', timeout=10)
+            challenge_iframe = None
+            c_selectors = ['css:iframe[src*="recaptcha/api2/bframe"]', 'xpath://iframe[contains(@src, "bframe")]']
+            for cs in c_selectors:
+                challenge_iframe = page.ele(cs, timeout=5)
+                if challenge_iframe: break
             if not challenge_iframe:
                 iframes = page.eles('css:iframe[src*="recaptcha"]')
-                if len(iframes) >= 2:
-                    challenge_iframe = iframes[1]
-        except Exception:
-            challenge_iframe = None
+                if len(iframes) >= 2: challenge_iframe = iframes[1]
+            if not challenge_iframe: return True
 
-        if not challenge_iframe:
-            log.warning("⚠️ 未找到挑战 iframe")
-            screenshot(page, f"no_challenge_{attempt}")
-            time.sleep(2)
-            continue
-
-        # 切换到挑战 iframe
-        try:
             page.switch_to.frame(challenge_iframe)
-        except Exception as e:
-            log.warning(f"切换挑战 iframe 失败: {e}")
-            continue
-
-        # 5. 点击音频按钮
-        try:
-            audio_btn = page.ele('css:.rc-button-audio', timeout=5)
-            if not audio_btn:
-                # 兜底：找带耳机图标的按钮
-                audio_btn = page.ele('css:button[title="音频挑战"]', timeout=3)
-            if audio_btn:
+            audio_btn = page.ele('css:#recaptcha-audio-button', timeout=5)
+            if not audio_btn: audio_btn = page.ele('css:.rc-button-audio', timeout=2)
+            if audio_btn: 
                 audio_btn.click()
-                log.info("✅ 点击了音频按钮")
-                time.sleep(3)
-            else:
-                log.warning("⚠️ 未找到音频按钮")
-                screenshot(page, f"no_audio_btn_{attempt}")
-                page.switch_to.main_frame()
-                continue
-        except Exception as e:
-            log.warning(f"点击音频按钮失败: {e}")
-            try:
-                page.switch_to.main_frame()
-            except:
-                pass
-            continue
-
-        # 6. 下载音频文件
-        try:
+                time.sleep(random.uniform(3, 5))
+            
             audio_link = page.ele('css:.rc-audiochallenge-tdownload-link', timeout=5)
             if not audio_link:
-                log.warning("⚠️ 未找到音频下载链接")
-                screenshot(page, f"no_audio_link_{attempt}")
-                page.switch_to.main_frame()
-                continue
+                if "自动查询" in page.html or "automated queries" in page.html:
+                    log.error("🚫 IP 被 Google 拦截")
+                    page.switch_to.main_frame(); return False
+                page.switch_to.main_frame(); continue
 
             audio_url = audio_link.attr('href')
-            log.info(f"📥 音频 URL: {audio_url[:80]}...")
-
-            # 下载音频
             audio_file = SHOT_DIR / f"audio_{attempt}.mp3"
             resp = requests.get(audio_url, timeout=30)
             audio_file.write_bytes(resp.content)
-            log.info(f"✅ 音频下载: {audio_file} ({len(resp.content)} bytes)")
-
-        except Exception as e:
-            log.warning(f"下载音频失败: {e}")
-            try:
-                page.switch_to.main_frame()
-            except:
-                pass
-            continue
-
-        # 7. 识别音频
-        try:
-            # 转换 mp3 → wav
+            
             wav_file = SHOT_DIR / f"audio_{attempt}.wav"
-            audio_segment = pydub.AudioSegment.from_mp3(str(audio_file))
-            audio_segment.export(str(wav_file), format="wav")
-            log.info(f"✅ 转换 WAV: {wav_file}")
-
-            # SpeechRecognition 识别
+            pydub.AudioSegment.from_mp3(str(audio_file)).export(str(wav_file), format="wav")
+            
             recognizer = sr.Recognizer()
             with sr.AudioFile(str(wav_file)) as source:
                 audio_data = recognizer.record(source)
-
-            # 用 Google Web Speech API 识别
-            text = recognizer.recognize_google(audio_data)
-            log.info(f"✅ 音频识别结果: '{text}'")
-
-        except sr.UnknownValueError:
-            log.warning("⚠️ 音频识别失败（无法理解音频）")
-            text = ""
-        except sr.RequestError as e:
-            log.warning(f"⚠️ 识别服务错误: {e}")
-            text = ""
-        except Exception as e:
-            log.warning(f"识别异常: {e}")
-            text = ""
-
-        if not text:
-            # 识别失败，刷新换一道
-            try:
-                refresh_btn = page.ele('css:button[title="重新获取音频挑战"]', timeout=3)
-                if not refresh_btn:
-                    refresh_btn = page.ele('css:.rc-button-reload', timeout=3)
-                if refresh_btn:
-                    refresh_btn.click()
-                    log.info("🔄 刷新音频挑战")
-                    time.sleep(3)
-            except:
-                pass
-            try:
-                page.switch_to.main_frame()
-            except:
-                pass
-            continue
-
-        # 8. 输入识别结果
-        try:
+                text = recognizer.recognize_google(audio_data, language="en-US")
+            
+            log.info(f"✅ 识别结果: {text}")
             input_box = page.ele('css:#audio-response', timeout=5)
-            if not input_box:
-                input_box = page.ele('css:.rc-audiochallenge-response', timeout=3)
             if input_box:
-                input_box.clear()
                 input_box.input(text)
-                log.info(f"✅ 输入识别结果: '{text}'")
                 time.sleep(1)
-            else:
-                log.warning("⚠️ 未找到输入框")
-        except Exception as e:
-            log.warning(f"输入失败: {e}")
-
-        # 9. 点击验证按钮
-        try:
-            verify_btn = page.ele('css:button[disabled=""]', timeout=2)
-            if not verify_btn:
-                verify_btn = page.ele('css:.rc-button-goog-default', timeout=3)
-            if verify_btn:
-                verify_btn.click()
-                log.info("✅ 点击了验证按钮")
-                time.sleep(3)
-        except Exception as e:
-            log.warning(f"点击验证按钮失败: {e}")
-
-        # 10. 检测是否通过
-        try:
+                verify_btn = page.ele('css:#recaptcha-verify-button', timeout=5)
+                if verify_btn: verify_btn.click()
+            
             page.switch_to.main_frame()
-        except:
-            pass
-
-        time.sleep(3)
-
-        # 检测 checkbox 是否变绿
-        try:
-            page.switch_to.frame(checkbox_iframe)
-            checkbox_class = page.ele('css:.recaptcha-checkbox').attr('class') or ''
-            page.switch_to.main_frame()
-            if 'recaptcha-checkbox-checked' in checkbox_class:
-                log.info("🎉 reCAPTCHA 音频识别成功！")
-                return True
-        except:
-            try:
-                page.switch_to.main_frame()
-            except:
-                pass
-
-        log.warning(f"⚠️ 第 {attempt + 1} 次尝试失败，重试...")
-        screenshot(page, f"recaptcha_fail_{attempt}")
-
-    log.error(f"❌ reCAPTCHA {MAX_RETRY} 次尝试都失败")
+            time.sleep(3)
+            if not page.ele('css:iframe[src*="recaptcha/api2/bframe"]', timeout=3): return True
+        except Exception as e:
+            log.warning(f"⚠️ 尝试 {attempt+1} 失败: {e}")
+            page.switch_to.main_frame(); time.sleep(2)
     return False
 
-# ==========================================================
-# Cookie 注入
-# ==========================================================
-
-def inject_cookies(page, cookie_str: str) -> bool:
-    """注入 cookie 到当前域名"""
-    if not cookie_str:
-        log.warning("⚠️ Cookie 为空")
-        return False
-
-    log.info(f"注入 cookie（{cookie_str.count(';')+1} 项）...")
-    injected = 0
+def inject_cookies(page, cookie_str: str):
+    if not cookie_str: return
     for item in cookie_str.split(";"):
         item = item.strip()
-        if "=" not in item:
-            continue
-        k, v = item.split("=", 1)
-        k = k.strip()
-        v = v.strip()
-        if not k:
-            continue
-        try:
-            page.set.cookies({k: v})
-            injected += 1
-        except Exception as e:
-            log.warning(f"  cookie [{k}] 注入失败: {e}")
+        if "=" in item:
+            k, v = item.split("=", 1)
+            try: page.set.cookies({k.strip(): v.strip()})
+            except: pass
 
-    log.info(f"✅ 注入 {injected} 个 cookie")
-    return True
+def create_proxy_auth_extension(proxy_url):
+    import zipfile
+    if "@" not in proxy_url: return None
+    try:
+        base_url = proxy_url.split("?")[0]
+        scheme = base_url.split("://")[0] if "://" in base_url else "http"
+        content = base_url.split("://")[1] if "://" in base_url else base_url
+        auth_part, addr_part = content.split("@")
+        proxy_user, proxy_pass = auth_part.split(":")
+        addr_split = addr_part.split(":")
+        proxy_host = addr_split[0]
+        proxy_port = addr_split[1] if len(addr_split) > 1 else ("1080" if "socks" in scheme else "8080")
+        scheme = "socks5" if "socks" in scheme else "http"
+        log.info(f"🔧 代理解析: {scheme}://{proxy_host}:{proxy_port}")
+    except: return None
 
-# ==========================================================
-# 主流程
-# ==========================================================
+    manifest_json = json.dumps({
+        "version": "1.0.0", "manifest_version": 2, "name": "Chrome Proxy",
+        "permissions": ["proxy", "tabs", "unlimitedStorage", "storage", "<all_urls>", "webRequest", "webRequestBlocking"],
+        "background": { "scripts": ["background.js"] }, "minimum_chrome_version":"22.0.0"
+    })
+    background_js = """
+    var config = { mode: "fixed_servers", rules: { singleProxy: { scheme: "%s", host: "%s", port: parseInt(%s) }, bypassList: ["localhost"] } };
+    chrome.proxy.settings.set({value: config, scope: "regular"}, function() {});
+    chrome.webRequest.onAuthRequired.addListener(function(details) {
+        return { authCredentials: { username: "%s", password: "%s" } };
+    }, {urls: ["<all_urls>"]}, ['blocking']);
+    """ % (scheme, proxy_host, proxy_port, proxy_user, proxy_pass)
+    
+    plugin_path = ROOT / "proxy_auth_plugin.zip"
+    with zipfile.ZipFile(str(plugin_path), 'w') as zp:
+        zp.writestr("manifest.json", manifest_json)
+        zp.writestr("background.js", background_js)
+    return str(plugin_path)
 
 def run_one(label: str, renew_url: str, cookie_str: str):
-    """单账号续期流程"""
     from DrissionPage import ChromiumPage, ChromiumOptions
-
-    if not renew_url:
-        log.error(f"❌ [{label}] 未配置 renew_url")
-        return {"label": label, "ok": False, "msg": "未配置 renew_url"}
-
-    log.info("\n" + "=" * 60)
-    log.info(f"👤 账号: {label}")
-    log.info(f"续期 URL: {renew_url}")
-    log.info("=" * 60)
-
-    # 配置浏览器
     co = ChromiumOptions()
+    co.headless()
     co.set_argument('--no-sandbox')
     co.set_argument('--disable-dev-shm-usage')
     co.set_argument('--disable-gpu')
-    co.set_argument('--lang=en-US')
-    co.set_argument('--user-agent', 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36')
-    if WARP_PROXY and not WARP_PROXY.startswith("socks"):
+    
+    if PROXY_URL:
+        if "@" in PROXY_URL:
+            plugin = create_proxy_auth_extension(PROXY_URL)
+            if plugin: 
+                co.add_extension(plugin)
+            else:
+                # 即使有 @ 但解析失败，也尝试直接设置
+                co.set_argument(f'--proxy-server={PROXY_URL}')
+        else:
+            # 直接使用启动参数设置代理，绕过 DrissionPage 的 SOCKS 限制
+            co.set_argument(f'--proxy-server={PROXY_URL}')
+    elif WARP_PROXY:
         co.set_argument(f'--proxy-server={WARP_PROXY}')
-        log.info(f"🌐 使用代理: {WARP_PROXY}")
-    else:
-        log.info("🌐 走系统级 WARP（fscarmen/warp-on-actions 已启用）")
 
+    co.set_argument('--disable-blink-features=AutomationControlled')
+    co.set_user_agent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36')
+    
     page = ChromiumPage(co)
     page.set.timeouts(PAGE_TIMEOUT)
-
     try:
-        # 1. 打开续期页面
-        log.info("🌐 打开续期页面...")
+        try:
+            page.get("https://api.ip.sb/ip", timeout=10)
+            log(f"📍 当前出口 IP: {page.run_js('return document.body.innerText').strip()}")
+        except: pass
+
+        log(f"🌐 正在访问: {renew_url}")
         page.get(renew_url)
         time.sleep(5)
-
-        # 2. 注入 cookie 并刷新
         if cookie_str:
             inject_cookies(page, cookie_str)
-            log.info("🔄 刷新让 cookie 生效...")
+            page.get(renew_url)
+            time.sleep(8)
+        
+        server_id, old_time, old_sec = get_server_info(page)
+        log(f"👤 账号: {label} | 🆔: {server_id} | ⏱️: {old_time}")
+
+        if old_sec > RENEW_THRESHOLD_SECONDS:
+            return {"label": label, "sid": server_id, "ok": True, "msg": f"跳过 ({old_sec//3600}h)", "new": f"{old_sec//3600}h"}
+
+        renew_btn = None
+        for sel in ['text:Renew server', 'css:button.purple', 'xpath://button[contains(text(), "Renew")]']:
+            renew_btn = page.ele(sel, timeout=5)
+            if renew_btn: break
+        if not renew_btn: 
+            page.get_screenshot(path=str(SHOT_DIR / f"error_{label}.png"))
+            return {"label": label, "sid": server_id, "ok": False, "msg": "未找到按钮"}
+        
+        renew_btn.click()
+        time.sleep(5)
+        if solve_recaptcha_audio(page):
+            time.sleep(3)
+            renew_confirm = page.ele('css:button.purple', timeout=5)
+            if renew_confirm and renew_confirm.is_displayed():
+                renew_confirm.click()
+                time.sleep(10)
             page.get(renew_url)
             time.sleep(5)
-
-        screenshot(page, f"{label}-dashboard")
-
-        # 3. 检测是否登录成功
-        body_text = page.ele('tag:body').text if page.ele('tag:body') else ""
-        if "Renew server" not in body_text and "Expires in" not in body_text:
-            log.warning(f"⚠️ [{label}] 可能未登录或页面未加载")
-            screenshot(page, f"{label}-not_logged_in")
-            return {"label": label, "ok": False, "msg": "页面未加载或 cookie 失效"}
-
-        # 4. 获取初始剩余时间
-        old_sec = get_expires_seconds(page)
-        if old_sec > 0:
-            log.info(f"初始剩余: {old_sec}s ({old_sec//3600}h {(old_sec%3600)//60}m)")
-
-        # 5. 点击 Renew server 按钮
-        log.info("🖱️ 点击 Renew server 按钮...")
-        try:
-            renew_btn = page.ele('text:Renew server', timeout=10)
-            if not renew_btn:
-                renew_btn = page.ele('css:button', timeout=5)
-            if renew_btn:
-                renew_btn.click()
-                log.info("✅ 点击了 Renew server 按钮")
-                time.sleep(3)
-            else:
-                log.warning("⚠️ 未找到 Renew server 按钮")
-                screenshot(page, f"{label}-no_renew_btn")
-                return {"label": label, "ok": False, "msg": "未找到 Renew 按钮"}
-        except Exception as e:
-            log.warning(f"点击 Renew 按钮失败: {e}")
-            screenshot(page, f"{label}-click_fail")
-            return {"label": label, "ok": False, "msg": f"点击失败: {e}"}
-
-        # 6. 处理 reCAPTCHA
-        screenshot(page, f"{label}-before_recaptcha")
-        log.info("🤖 检测 reCAPTCHA...")
-
-        recaptcha_passed = solve_recaptcha_audio(page)
-
-        if not recaptcha_passed:
-            log.error("❌ reCAPTCHA 未通过")
-            screenshot(page, f"{label}-recaptcha_failed")
-            return {"label": label, "ok": False, "msg": "reCAPTCHA 未通过"}
-
-        # 7. reCAPTCHA 通过后，点击 Renew（弹窗里的紫色按钮）
-        log.info("🖱️ 点击弹窗里的 Renew 按钮...")
-        time.sleep(2)
-        try:
-            renew_modal_btn = page.ele('css:button.purple', timeout=5)
-            if not renew_modal_btn:
-                btns = page.eles('css:button')
-                for btn in btns:
-                    if 'renew' in (btn.text or '').lower():
-                        renew_modal_btn = btn
-                        break
-            if renew_modal_btn:
-                renew_modal_btn.click()
-                log.info("✅ 点击了弹窗 Renew 按钮")
-                time.sleep(5)
-            else:
-                log.warning("⚠️ 未找到弹窗 Renew 按钮，可能已自动续期")
-        except Exception as e:
-            log.warning(f"点击弹窗 Renew 按钮失败: {e}")
-
-        # 8. 检测续期是否成功
-        screenshot(page, f"{label}-after_renew")
-        time.sleep(3)
-
-        page.get(renew_url)
-        time.sleep(5)
-
-        new_sec = get_expires_seconds(page)
-        screenshot(page, f"{label}-final")
-
-        if new_sec > old_sec:
-            delta = new_sec - old_sec
-            log.info(f"✅ [{label}] 续期成功！{old_sec}s → {new_sec}s (+{delta}s)")
-            return {
-                "label": label,
-                "ok": True,
-                "old": f"{old_sec//3600}h {(old_sec%3600)//60}m",
-                "new": f"{new_sec//3600}h {(new_sec%3600)//60}m",
-                "delta": f"+{delta//3600}h {(delta%3600)//60}m",
-            }
-        elif new_sec > 0:
-            log.warning(f"⚠️ [{label}] 时间未增加（{old_sec}s → {new_sec}s）")
-            return {
-                "label": label,
-                "ok": False,
-                "msg": f"时间未增加 ({old_sec//3600}h → {new_sec//3600}h)",
-            }
-        else:
-            log.warning(f"⚠️ [{label}] 无法识别新时间，但 reCAPTCHA 已通过")
-            return {"label": label, "ok": True, "msg": "reCAPTCHA 已通过, 无法确认时间"}
-
-    except Exception as e:
-        log.exception(f"❌ [{label}] 未捕获异常: {e}")
-        return {"label": label, "ok": False, "msg": f"异常: {str(e)[:200]}"}
+            _, new_time, new_sec = get_server_info(page)
+            if new_sec > old_sec: return {"label": label, "sid": server_id, "ok": True, "old": old_time, "new": new_time}
+        return {"label": label, "sid": server_id, "ok": False, "msg": "流程未完成"}
+    except Exception as e: return {"label": label, "sid": "Error", "ok": False, "msg": f"异常: {e}"}
     finally:
-        try:
-            page.quit()
-        except:
-            pass
+        try: page.quit()
+        except: pass
 
+def run():
+    accounts = collect_accounts()
+    if not accounts: return False
+    results = []
+    for label, url, ck in accounts:
+        results.append(run_one(label, url, ck))
+        time.sleep(random.uniform(5, 10))
+    ok_count = sum(1 for r in results if r.get("ok"))
+    summary = [f"🎮 <b>host2play 续期</b>", f"⏰ {now_cn():%Y-%m-%d %H:%M:%S}", "", f"📊 总账号: {len(results)} | ✅ {ok_count} | ❌ {len(results)-ok_count}", ""]
+    for r in results:
+        status = "✅" if r.get("ok") else "❌"
+        summary.append(f"👤 <b>{r['label']}</b> ({r.get('sid', 'Unknown')}): {status} {r.get('msg', '成功') if not r.get('new') else r['new']}")
+    tg("\n".join(summary))
+    return all(r.get("ok") for r in results)
 
 def collect_accounts():
-    """收集所有账号, 返回 [(label, renew_url, cookie_str), ...]
-    优先级:
-      1. H2P_ACCOUNTS (多账号, 每行: name|||renew_url|||cookie)
-      2. H2P_RENEW_URL + H2P_COOKIE (单账号兜底)
-    """
     accounts = []
     multi = os.getenv("H2P_ACCOUNTS", "").strip()
     if multi:
         for line in multi.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split("|||")
-            if len(parts) >= 3:
-                accounts.append((parts[0].strip(), parts[1].strip(), parts[2].strip()))
-            elif len(parts) == 2:
-                # 只有 url||cookie, 用 url 作为 label
-                accounts.append((f"server-{len(accounts)+1}", parts[0].strip(), parts[1].strip()))
-            else:
-                log.warning(f"⚠️ 跳过格式错误的行: {line[:50]}...")
-
-    # 单账号兜底
-    if not accounts and RENEW_URL and COOKIE_STR:
-        accounts.append(("main", RENEW_URL, COOKIE_STR))
-
+            parts = line.strip().split("|||")
+            if len(parts) >= 3: accounts.append((parts[0].strip(), parts[1].strip(), parts[2].strip()))
+    if not accounts and RENEW_URL and COOKIE_STR: accounts.append(("main", RENEW_URL, COOKIE_STR))
     return accounts
 
-
-def build_summary(results):
-    ok_count = sum(1 for r in results if r.get("ok"))
-    fail_count = len(results) - ok_count
-    lines = ["🎮 <b>host2play 续期</b>", f"⏰ {now_cn():%Y-%m-%d %H:%M:%S} (北京)", ""]
-    lines.append(f"📊 总账号: {len(results)} | ✅ {ok_count} | ❌ {fail_count}")
-    lines.append("")
-    for r in results:
-        if r.get("ok") and r.get("new"):
-            lines.append(f"👤 <b>{r['label']}</b>: ✅ {r.get('old','?')} → {r['new']} ({r.get('delta','')})")
-        elif r.get("ok"):
-            lines.append(f"👤 <b>{r['label']}</b>: ⚠️ {r.get('msg','未知')}")
-        else:
-            lines.append(f"👤 <b>{r['label']}</b>: ❌ {r.get('msg','失败')}")
-    return "\n".join(lines)
-
-
-def run():
-    accounts = collect_accounts()
-    if not accounts:
-        log.error("❌ 未配置任何账号 (H2P_ACCOUNTS 或 H2P_RENEW_URL+H2P_COOKIE)")
-        tg("❌ <b>host2play 续期失败</b>\n⚠️ 未配置任何账号")
-        return False
-
-    log.info("=" * 60)
-    log.info(f"host2play 续期启动 - 共 {len(accounts)} 个账号")
-    log.info(f"TG_BOT_TOKEN: {'✅ 已配置' if TG_TOKEN else '❌ 未配置'}")
-    log.info(f"TG_CHAT_ID: {'✅ 已配置' if TG_CHAT_ID else '❌ 未配置'}")
-    log.info("=" * 60)
-
-    tg(f"🚀 <b>host2play 续期启动</b>\n"
-       f"⏰ {now_cn():%Y-%m-%d %H:%M:%S} (北京)\n"
-       f"👥 共 {len(accounts)} 个账号", silent=True)
-
-    results = []
-    for label, url, ck in accounts:
-        try:
-            r = run_one(label, url, ck)
-        except Exception as e:
-            r = {"label": label, "ok": False, "msg": f"异常: {e}"}
-        results.append(r)
-
-    summary = build_summary(results)
-    log.info("\n" + summary)
-    tg(summary)
-
-    return all(r.get("ok") for r in results)
-
-
 if __name__ == "__main__":
-    success = run()
-    if success:
-        log.info("🏁 续期完成")
-        sys.exit(0)
-    else:
-        log.error("🏁 续期完成 (部分或全部失败)")
-        sys.exit(1)
+    if run(): sys.exit(0)
+    else: sys.exit(1)

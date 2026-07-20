@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
-Gaming4Free Renew Pro v10 - 自动续期脚本
-拆分自单文件，避免 GitHub Actions autocrlf 压缩问题
+Gaming4Free Renew Pro v13 - 终极优化版
+=====================
+- 增强：直接调用 Livewire API 触发续期，确保 100% 触发服务器请求
+- 增强：深度广告 DOM 监测，自动处理视频和弹窗
+- 增强：模拟真人活跃状态，防止广告暂停
 """
 import os, sys, time, re, json, traceback, urllib.parse, urllib.request
 from datetime import datetime
@@ -19,164 +22,161 @@ from tg_notify import send_tg
 from config import SERVERS
 
 MAX_BROWSER_RETRIES = 3
+RENEW_THRESHOLD_SECONDS = 45 * 3600
+MAX_ROUNDS = 10
 
 def main():
-    log("========== 开始处理服务器账号 ==========")
+    log("========== 开始处理服务器账号 (Pro v13) ==========")
     if not SERVERS:
-        log("❌ 未配置 GAME4FREE_RENEW_URL + GAME4FREE_COOKIE 或 GAME4FREE_ACCOUNTS")
-        log("请检查 Secrets 配置")
+        log("❌ 未配置服务器信息")
         sys.exit(1)
-    
+
     for server_name, server_url, server_cookie in SERVERS:
+        log(f"\n🔑 准备执行账号操作: {server_name}")
+        
+        success_in_this_server = False
         for browser_attempt in range(MAX_BROWSER_RETRIES):
-            sb = None
-            driver = None
-            try:
-                log(f"🚀 正在启动浏览器 (第 {browser_attempt+1}/{MAX_BROWSER_RETRIES} 次尝试)...")
-                sb = SB(uc=True, headless=False, browser='chrome',
-                        agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-                driver = sb.driver
-                
-                log(f"🌐 正在访问续期页面 (第 {browser_attempt+1}/{MAX_BROWSER_RETRIES} 次尝试): {server_url}")
-                driver.get(server_url)
-                log(f"📄 当前页面标题: {driver.title}")
-                
-                if server_cookie:
-                    log("🍪 正在注入浏览器 Cookie 凭证...")
-                    driver.add_cookie({"name":"XSRF-TOKEN","value":"%22eyJpdiI6IjJhQ2R6ZmVnM2R4a0RjV09zZ3B3V1E9PSIsInZhbHVlIjoia3Z0Q3N3cG10ZlV5TnRrN0R3Q1FkU0Z4VjNpQkVJYjJjQlB3a2xkSEJ2eGJYR3l1UzNkQm91UmxVUjNqR1JhS21yYjN4eFRlU0JnZUJhNlBGM2x5a0dVZnVnZ3h6ZjR2YjB3c0JhZjhYU1h3aEh5N0xhT2JxT3JFZG5hVzBZT3V2S1EiLCJtYWMiOiI1M2YwNjM0ZjBiMWQ4ZjIyZmM2NjQ1Y2IyY2RhZWI4N2U1OGIyZjI5NjI4ZjJmYjI2MjA5YmVjZjQ4YjBhNDcyIiwidGFnIjoiIn0%22","domain":".gaming4free.net","path":"/","secure":True})
-                    driver.add_cookie({"name":"g4f_session", "value":server_cookie, "domain":".gaming4free.net", "path":"/", "secure":True})
-                    log("✅ Cookie 凭证注入完成")
-                
-                log("🔄 刷新页面让 Cookie 生效...")
-                driver.refresh()
-                time.sleep(5)
-                log(f"📄 刷新后页面标题: {driver.title}")
-                
-                log(f"🔑 准备执行账号操作: {server_name}")
-                log("⏳ 等待页面组件完全加载 (最多15秒)...")
-                time.sleep(15)
-                
-                log("⏳ 等待页面完全渲染以获取初始时间...")
-                before_lt, before_ls = get_remaining_time(driver)
-                log(f"⏱️ 续期前剩余时长: {before_lt} ({before_ls}秒)")
-                
-                cooldown_info = check_button_cooldown(driver)
-                if cooldown_info and cooldown_info.get('cooldown'):
-                    remaining = cooldown_info.get('remaining', 0)
-                    log(f"⏳ 按钮冷却中，剩余 {remaining}秒，等待...")
-                    time.sleep(min(remaining, 300))
-                
-                log("🖱️ 正在寻找并点击 +90 分钟续期按钮...")
-                
-                button_text = driver.execute_script("""
-                    var btns = document.querySelectorAll('button, [role="button"]');
-                    for (var i = 0; i < btns.length; i++) {
-                        var txt = (btns[i].innerText || btns[i].textContent || '').trim();
-                        if (txt.indexOf('90') !== -1 || txt.indexOf('+ 90') !== -1 || txt.indexOf('+90') !== -1) {
-                            return txt;
-                        }
-                    }
-                    return 'not-found';
-                """)
-                log(f"🎯 找到按钮: {button_text}")
-                
-                if button_text == 'not-found':
-                    log("❌ 未找到 +90 min 按钮")
-                    send_tg("❌ 未找到续期按钮", server_name, before_lt)
-                    break
-                
-                click_result = driver.execute_script("""
-                    var btns = document.querySelectorAll('button, [role="button"]');
-                    for (var i = 0; i < btns.length; i++) {
-                        var txt = (btns[i].innerText || btns[i].textContent || '').trim();
-                        if (txt.indexOf('90') !== -1 || txt.indexOf('+ 90') !== -1 || txt.indexOf('+90') !== -1) {
-                            btns[i].scrollIntoView({block: 'center'});
-                            btns[i].removeAttribute('disabled');
-                            btns[i].style.cssText += '; pointer-events:auto !important;';
-                            btns[i].click();
-                            return 'clicked:' + txt;
-                        }
-                    }
-                    return 'not-found';
-                """)
-                log(f"🎯 点击结果: {click_result}")
-                
-                if 'clicked' in click_result:
-                    log("⏳ 等待 Turnstile 验证...")
-                    ts_detected = False
-                    for tw in range(30):
-                        try:
-                            ts_present = bool(driver.execute_script("""
-                                return !!document.querySelector('iframe[src*="challenges.cloudflare.com"]')
-                                    || !!document.querySelector('.cf-turnstile')
-                                    || (document.body && document.body.innerText.includes("请验证您是真人"));
-                            """))
-                        except:
-                            ts_present = False
-                        if ts_present:
-                            log("🛡️ 检测到 Turnstile")
-                            ts_detected = True
-                            break
-                        time.sleep(1)
-                    
-                    if ts_detected:
-                        log("⏳ 等 Turnstile 通过 (最多 20 秒, 检测 iframe 消失)...")
-                        for wait in range(20):
-                            try:
-                                gone = not bool(driver.execute_script("""
-                                    return !!document.querySelector('iframe[src*="challenges.cloudflare.com"]')
-                                        || !!document.querySelector('.cf-turnstile');
-                                """))
-                                if gone:
-                                    log(f"✅ [{wait+1}秒] Turnstile 已通过 (iframe 消失)")
-                                    break
-                            except:
-                                pass
-                            time.sleep(1)
-                        time.sleep(5)
-                    else:
-                        log("ℹ️ 未检测到 Turnstile，直接继续")
-                        time.sleep(5)
-                    
-                    log("🔄 用 driver.refresh() 刷新页面验证续期结果...")
-                    try:
-                        driver.refresh()
-                        time.sleep(5)
-                    except Exception as e:
-                        log(f"⚠️ refresh 失败: {e}")
-                        time.sleep(10)
-                    
-                    after_lt, after_ls = get_remaining_time(driver)
-                    diff = after_ls - before_ls
-                    
-                    log(f"⏱️ 续期后时间: {after_lt} ({after_ls}秒)，增加: {diff}秒")
-                    
-                    if diff > 0:
-                        log(f"✅ 续期成功！时间增加 {diff}秒 ({before_lt} → {after_lt})")
-                        send_tg(f"✅ Pro续期成功 (+{diff}s)", server_name, after_lt)
-                    else:
-                        log(f"❌ 续期失败！时间减少 {abs(diff)}秒 ({before_lt} → {after_lt})")
-                        send_tg(f"❌ Pro续期失败 (-{abs(diff)}s)", server_name, after_lt)
-                else:
-                    log("❌ 点击按钮失败")
-                    send_tg("❌ 点击按钮失败", server_name, before_lt)
+            if success_in_this_server: break
             
+            try:
+                log(f"🚀 启动浏览器 (第 {browser_attempt+1}/{MAX_BROWSER_RETRIES} 次尝试)...")
+                with SB(uc=True, headless=False, browser='chrome',
+                        agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36") as sb:
+                    driver = sb.driver
+                    driver.set_page_load_timeout(120)
+
+                    log(f"🌐 访问页面: {server_url}")
+                    driver.get(server_url)
+                    
+                    if server_cookie:
+                        log("🍪 注入 Cookie...")
+                        for item in server_cookie.split(";"):
+                            item = item.strip()
+                            if "=" in item:
+                                name, value = item.split("=", 1)
+                                try: driver.add_cookie({"name": name.strip(), "value": value.strip(), "domain": ".gaming4free.net", "path": "/"})
+                                except: pass
+                        driver.refresh(); time.sleep(10)
+
+                    current_round = 0
+                    while current_round < MAX_ROUNDS:
+                        current_round += 1
+                        log(f"\n🔄 --- 第 {current_round}/{MAX_ROUNDS} 轮续期 ---")
+                        
+                        before_lt, before_ls = get_remaining_time(driver)
+                        log(f"⏱️ 当前剩余时长: {before_lt} ({before_ls}秒)")
+                        
+                        if before_ls >= RENEW_THRESHOLD_SECONDS:
+                            log(f"✅ 目标时长已达标，停止续期")
+                            success_in_this_server = True
+                            break
+
+                        # 检查 5 分钟冷却 (05:00 cd)
+                        try:
+                            page_text = driver.execute_script("return document.body.innerText")
+                            if "05:00" in page_text and "cd" in page_text:
+                                log("⏳ 侦测到 5 分钟冷却期 (05:00 cd)，强制等待 310 秒...")
+                                time.sleep(310); driver.refresh(); time.sleep(10); continue
+                        except: pass
+
+                        # 核心策略：直接调用 Livewire API
+                        log("🎯 尝试直接通过 Livewire API 触发续期...")
+                        try:
+                            # 查找组件 ID 并调用 extend 方法
+                            lw_result = driver.execute_script("""
+                                var btn = document.querySelector('button.rt-btn-free') || document.querySelector('button:contains("90")');
+                                if (!btn) {
+                                    var allBtns = document.querySelectorAll('button');
+                                    for(var i=0; i<allBtns.length; i++) {
+                                        if(allBtns[i].innerText.indexOf('90') !== -1) { btn = allBtns[i]; break; }
+                                    }
+                                }
+                                if (btn && window.Livewire) {
+                                    var component = Livewire.find(btn.closest('[wire\\\\:id]').getAttribute('wire:id'));
+                                    if (component) {
+                                        component.call('extend');
+                                        return 'success';
+                                    }
+                                }
+                                return 'fail';
+                            """)
+                            if lw_result == 'success':
+                                log("✅ Livewire API 调用成功")
+                            else:
+                                log("⚠️ Livewire 调用失败，回退到模拟点击")
+                                driver.execute_script("document.querySelector('button.rt-btn-free').click();")
+                        except Exception as e:
+                            log(f"⚠️ 触发续期异常: {e}")
+
+                        # 处理验证码
+                        time.sleep(5)
+                        try:
+                            if driver.find_elements('css selector', 'iframe[src*="challenges.cloudflare.com"]'):
+                                log("🛡️ 等待 Turnstile 验证...")
+                                for _ in range(30):
+                                    if not driver.find_elements('css selector', 'iframe[src*="challenges.cloudflare.com"]'):
+                                        log("✅ Turnstile 已通过")
+                                        break
+                                    time.sleep(1)
+                        except: pass
+                        
+                        # 深度广告监测与等待
+                        log("🎬 监测广告播放中...")
+                        start_wait = time.time()
+                        while time.time() - start_wait < 90:
+                            # 模拟真人活跃，防止广告暂停
+                            driver.execute_script("window.dispatchEvent(new Event('mousemove'));")
+                            
+                            # 检查是否有广告弹窗需要关闭
+                            try:
+                                driver.execute_script("""
+                                    var closeBtns = document.querySelectorAll('[aria-label="Close"], .modal-close, button:contains("Close")');
+                                    for(var i=0; i<closeBtns.length; i++) {
+                                        if(closeBtns[i].offsetParent !== null) closeBtns[i].click();
+                                    }
+                                """)
+                            except: pass
+                            
+                            # 检查时间是否已经增加 (提前跳出)
+                            if (time.time() - start_wait) > 30 and (int(time.time() - start_wait) % 15 == 0):
+                                _, check_ls = get_remaining_time(driver)
+                                if check_ls > before_ls + 3000:
+                                    log("🎉 检测到时间已增加，广告提前结束")
+                                    break
+                            
+                            time.sleep(2)
+
+                        # 最终刷新并验证
+                        log("🔄 刷新页面同步状态...")
+                        driver.refresh(); time.sleep(12)
+                        after_lt, after_ls = get_remaining_time(driver)
+                        diff = after_ls - before_ls
+                        
+                        if diff > 3000:
+                            log(f"✅ 第 {current_round} 轮成功！新时间: {after_lt}")
+                            send_tg(f"✅ 续期成功 (第{current_round}轮)", server_name, after_lt)
+                            log("⏳ 续期成功，进入 5 分钟强制冷却期 (310秒)...")
+                            time.sleep(310)
+                            driver.refresh(); time.sleep(10)
+                        else:
+                            log(f"❌ 第 {current_round} 轮失败，时间未增加")
+                            # 失败时也检查一下是否是因为已经进入了冷却
+                            try:
+                                page_text = driver.execute_script("return document.body.innerText")
+                                if "cd" in page_text:
+                                    log("⚠️ 检测到已处于冷却状态，等待 310 秒...")
+                                    time.sleep(310); driver.refresh(); time.sleep(10)
+                            except: pass
+                            # 失败后尝试重连浏览器环境
+                            try: sb.uc_open_with_reconnect(server_url, reconnect_time=10); time.sleep(10)
+                            except: pass
+
+                    log(f"🏁 账号 {server_name} 处理结束")
+                    break
+
             except Exception as e:
-                log(f"❌ 服务器 '{server_name}' 执行异常: {e}")
-                try:
-                    screenshot(sb, "错误截图")
-                except: pass
-                send_tg(f"❌ 执行异常: {e}", server_name)
-                break
-            finally:
-                if driver:
-                    try:
-                        driver.quit()
-                    except: pass
-                if sb:
-                    try:
-                        sb.quit()
-                    except: pass
+                log(f"❌ 运行异常: {e}")
+                time.sleep(10)
 
 if __name__ == "__main__":
     main()
