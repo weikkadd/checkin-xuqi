@@ -29,7 +29,7 @@ WARP_PROXY = os.getenv("WARP_PROXY", "")
 PROXY_URL = os.getenv("PROXY_URL", "")
 RENEW_THRESHOLD_SECONDS = 25 * 3600  # 剩余超过25小时则跳过
 MAX_RETRY = 5
-PAGE_TIMEOUT = 180  # 增加到180秒，避免Chrome渲染进程超时
+PAGE_TIMEOUT = 180
 TG_TOKEN = os.getenv("TG_BOT_TOKEN", "")
 TG_CHAT_ID = os.getenv("TG_CHAT_ID", "")
 TZ_CN = timezone(timedelta(hours=8))
@@ -102,7 +102,6 @@ def get_server_info(page):
                 sid_match = re.search(r"Renew server:\s*([a-zA-Z0-9\-]+)", text_content, re.IGNORECASE)
                 if sid_match:
                     server_id = sid_match.group(1)
-                # 同时尝试其他可能的服务器ID格式
                 if server_id == "Unknown":
                     sid_match2 = re.search(r"Server:\s*([a-zA-Z0-9\-]+)", text_content, re.IGNORECASE)
                     if sid_match2:
@@ -126,10 +125,25 @@ def debug_dump(page, label=""):
         pass
     try:
         src_path = SHOT_DIR / f"debug_src_{label}_{int(time.time())}.txt"
-        src_path.write_text(page.html[:8000], encoding="utf-8")
-        log.info(f"页面源码已保存: {src_path} (前8000字符)")
-    except Exception:
-        pass
+        src_path.write_text(page.html[:15000], encoding="utf-8")
+        log.info(f"页面源码已保存: {src_path} (前15000字符)")
+        
+        # 额外保存所有按钮信息
+        btns_path = SHOT_DIR / f"debug_btns_{label}_{int(time.time())}.txt"
+        all_buttons = page.eles('css:button')
+        btn_info = []
+        for i, btn in enumerate(all_buttons):
+            try:
+                text = btn.text[:50] if btn.text else "no text"
+                cls = btn.attr("class") or ""
+                disp = btn.is_displayed()
+                btn_info.append(f"  btn[{i}]: text='{text}' class='{cls}' displayed={disp}")
+            except Exception:
+                pass
+        btns_path.write_text("\n".join(btn_info), encoding="utf-8")
+        log.info(f"按钮列表已保存: {btns_path}")
+    except Exception as e:
+        log.warning(f"保存调试信息失败: {e}")
 
 
 def solve_recaptcha_audio(page) -> bool:
@@ -143,7 +157,6 @@ def solve_recaptcha_audio(page) -> bool:
 
     log.info("开始处理 reCAPTCHA...")
 
-    # ========== 第一步：使用 get_frame 找到 reCAPTCHA iframe ==========
     recaptcha_frame = None
 
     # 方法1：通过 src 属性查找
@@ -152,13 +165,11 @@ def solve_recaptcha_audio(page) -> bool:
     if recaptcha_frame:
         log.info(f"找到 reCAPTCHA iframe: src={recaptcha_frame.src[:80] if hasattr(recaptcha_frame, 'src') else 'N/A'}")
     else:
-        # 方法2：通过 title 属性查找
         log.info("尝试通过 title 属性查找 reCAPTCHA iframe...")
         recaptcha_frame = page.get_frame('@title*="recaptcha"')
         if recaptcha_frame:
             log.info("找到 reCAPTCHA iframe (via title)")
         else:
-            # 方法3：遍历所有 iframe 手动查找
             log.info("尝试遍历所有 iframe...")
             all_frames = page.eles('css:iframe')
             log.info(f"页面中共找到 {len(all_frames)} 个 iframe")
@@ -176,10 +187,9 @@ def solve_recaptcha_audio(page) -> bool:
         debug_dump(page, "no_recaptcha_frame")
         return False
 
-    # ========== 第二步：在 iframe 内找到并点击 checkbox ==========
+    # 在 iframe 内找到并点击 checkbox
     checkbox_found = False
     try:
-        # 尝试多种 checkbox 选择器
         for sel in ['css:.recaptcha-checkbox-checkmark', 'css:.recaptcha-checkbox-input', 'css:input[type="checkbox"]']:
             try:
                 cb = recaptcha_frame.ele(sel, timeout=5)
@@ -194,7 +204,6 @@ def solve_recaptcha_audio(page) -> bool:
                 continue
 
         if not checkbox_found:
-            # 尝试 role=checkbox
             try:
                 cb = recaptcha_frame.ele('@role="checkbox"', timeout=5)
                 if cb:
@@ -210,29 +219,22 @@ def solve_recaptcha_audio(page) -> bool:
 
     if not checkbox_found:
         log.info("未找到 checkbox，可能已自动通过")
-        # 仍然继续，也许不需要验证码
         time.sleep(3)
         return True
 
     time.sleep(random.uniform(3, 6))
 
-    # ========== 第三步：处理 reCAPTCHA 挑战（音频验证码） ==========
+    # 处理 reCAPTCHA 挑战（音频验证码）
     for attempt in range(MAX_RETRY):
         log.info(f"第 {attempt + 1} 次尝试 reCAPTCHA 挑战...")
-
-        # 保存当前页面状态
         debug_dump(page, f"challenge_start_{attempt}")
 
-        # 查找 challenge iframe (bframe)
         challenge_frame = None
-
-        # 方法1：通过 src 查找 bframe
         log.info("尝试查找 challenge iframe (bframe)...")
         challenge_frame = page.get_frame('@src*="bframe"')
         if challenge_frame:
             log.info("找到 challenge iframe (bframe)")
         else:
-            # 方法2：遍历所有 iframe
             all_frames = page.eles('css:iframe')
             for fr in all_frames:
                 src = fr.attr("src") or ""
@@ -243,7 +245,6 @@ def solve_recaptcha_audio(page) -> bool:
 
         if not challenge_frame:
             log.info("未找到 challenge iframe，假设已通过验证")
-            # 检查页面是否有成功消息
             try:
                 body_text = page.run_js("return document.body.innerText")
                 if "renew" in body_text.lower() or "success" in body_text.lower() or "extended" in body_text.lower():
@@ -253,7 +254,7 @@ def solve_recaptcha_audio(page) -> bool:
                 pass
             return False
 
-        # ========== 第四步：在 challenge iframe 中点击音频按钮 ==========
+        # 在 challenge iframe 中点击音频按钮
         audio_btn = None
         audio_selectors = [
             '@id="recaptcha-audio-button"',
@@ -276,7 +277,7 @@ def solve_recaptcha_audio(page) -> bool:
         else:
             log.info("未找到音频按钮，可能已有图片验证码或其他类型")
 
-        # ========== 第五步：下载音频文件 ==========
+        # 下载音频文件
         audio_link = None
         audio_selectors = [
             '.rc-audiochallenge-tdownload-link',
@@ -292,7 +293,6 @@ def solve_recaptcha_audio(page) -> bool:
                 pass
 
         if not audio_link:
-            # 检查是否被 Google 拦截
             try:
                 page_text = challenge_frame.ele('tag:body', timeout=3).ele('tag:innerText', timeout=2).text
                 if "自动查询" in page_text or "automated queries" in page_text:
@@ -327,7 +327,7 @@ def solve_recaptcha_audio(page) -> bool:
             log.warning(f"WAV 转换失败: {e}")
             continue
 
-        # ========== 第六步：语音识别 ==========
+        # 语音识别
         try:
             recognizer = sr.Recognizer()
             with sr.AudioFile(str(wav_file)) as source:
@@ -338,7 +338,7 @@ def solve_recaptcha_audio(page) -> bool:
             log.warning(f"语音识别失败: {e}")
             continue
 
-        # ========== 第七步：输入答案并提交 ==========
+        # 输入答案并提交
         try:
             input_box = challenge_frame.ele('@id="audio-response"', timeout=5)
             if input_box:
@@ -351,7 +351,6 @@ def solve_recaptcha_audio(page) -> bool:
                     verify_btn.click()
                     log.info("已点击验证按钮")
                 else:
-                    # 尝试其他验证按钮
                     for vs in ['.rc-button-default', '@aria-label="Verify"']:
                         try:
                             vb = challenge_frame.ele(vs, timeout=3)
@@ -366,7 +365,7 @@ def solve_recaptcha_audio(page) -> bool:
 
         time.sleep(5)
 
-        # ========== 第八步：检查验证是否通过 ==========
+        # 检查验证是否通过
         try:
             remaining_challenge = page.get_frame('@src*="bframe"')
             if not remaining_challenge:
@@ -378,7 +377,6 @@ def solve_recaptcha_audio(page) -> bool:
             log.warning(f"检查验证状态失败: {e}")
             return True
 
-    # 所有尝试都失败了
     log.error("reCAPTCHA 音频识别全部失败")
     debug_dump(page, "final_fail")
     return False
@@ -469,7 +467,6 @@ def run_one(label: str, renew_url: str, cookie_str: str):
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
     )
 
-    # 代理配置
     if PROXY_URL:
         if "@" in PROXY_URL:
             plugin = create_proxy_auth_extension(PROXY_URL)
@@ -519,7 +516,7 @@ def run_one(label: str, renew_url: str, cookie_str: str):
                 "new": f"{old_sec // 3600}h",
             }
 
-        # 查找续期按钮 - 更宽松的选择器
+        # 查找续期按钮
         renew_btn = None
         btn_texts = ["Renew server", "Renew", "Extend", "Continue"]
         for btn_text in btn_texts:
@@ -531,7 +528,6 @@ def run_one(label: str, renew_url: str, cookie_str: str):
             except Exception:
                 pass
         
-        # 如果没找到文字按钮，尝试紫色按钮
         if not renew_btn:
             try:
                 renew_btn = page.ele('css:button.purple', timeout=5)
@@ -540,7 +536,6 @@ def run_one(label: str, renew_url: str, cookie_str: str):
             except Exception:
                 pass
         
-        # 最后尝试 xpath
         if not renew_btn:
             try:
                 renew_btn = page.ele('xpath://button[contains(text(), "Renew")]', timeout=5)
@@ -550,7 +545,6 @@ def run_one(label: str, renew_url: str, cookie_str: str):
                 pass
 
         if not renew_btn:
-            # 保存截图调试
             page.get_screenshot(path=str(SHOT_DIR / f"error_{label}_no_btn.png"))
             log.error("未找到续期按钮，已保存截图")
             debug_dump(page, "no_renew_btn")
@@ -559,61 +553,25 @@ def run_one(label: str, renew_url: str, cookie_str: str):
         log.info("点击续期按钮...")
         renew_btn.click()
         
-        # 等待更长时间让 reCAPTCHA 出现
+        # 等待 reCAPTCHA 出现
         log.info("等待 reCAPTCHA 出现...")
         time.sleep(10)
 
         # 处理 reCAPTCHA
         captcha_passed = solve_recaptcha_audio(page)
         if captcha_passed:
-            log.info("reCAPTCHA 通过，寻找确认按钮...")
+            log.info("reCAPTCHA 通过，等待页面自动处理...")
             
             # 保存当前页面状态
             debug_dump(page, "after_captcha")
             
-            # 查找确认按钮 - 更宽松的策略
-            renew_confirm = None
+            # 关键改动：reCAPTCHA 通过后，**不再寻找确认按钮**
+            # 而是等待页面自动刷新/更新
+            log.info("等待 15 秒让续期请求自动提交...")
+            time.sleep(15)
             
-            # 方法1：查找包含 Confirm/Yes 的按钮
-            confirm_texts = ["Confirm", "Yes", "Continue", "OK", "Extend"]
-            for txt in confirm_texts:
-                try:
-                    renew_confirm = page.ele(f"text:{txt}", timeout=5)
-                    if renew_confirm and renew_confirm.is_displayed():
-                        log.info(f"找到确认按钮: text:{txt}")
-                        break
-                except Exception:
-                    pass
-            
-            # 方法2：查找紫色按钮（通常是确认按钮）
-            if not renew_confirm:
-                try:
-                    purple_btns = page.eles('css:button.purple')
-                    if purple_btns:
-                        renew_confirm = purple_btns[0]
-                        log.info(f"找到紫色按钮作为确认按钮")
-                except Exception:
-                    pass
-            
-            # 方法3：查找任何可见的按钮
-            if not renew_confirm:
-                try:
-                    all_buttons = page.eles('css:button')
-                    visible_buttons = [b for b in all_buttons if b.is_displayed()]
-                    if visible_buttons:
-                        renew_confirm = visible_buttons[0]
-                        log.info(f"使用第一个可见按钮: {visible_buttons[0].text[:30] if visible_buttons[0].text else 'unknown'}")
-                except Exception:
-                    pass
-
-            if renew_confirm:
-                log.info("点击确认按钮...")
-                renew_confirm.click()
-                log.info("等待续期处理...")
-                time.sleep(20)  # 增加到20秒
-            else:
-                log.info("未找到确认按钮，等待页面自动处理...")
-                time.sleep(15)  # 至少等待15秒
+            # 再次保存状态
+            debug_dump(page, "after_wait")
 
             # 刷新页面同步状态
             log.info("刷新页面同步状态...")
