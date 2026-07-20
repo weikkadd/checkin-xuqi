@@ -1,9 +1,9 @@
-name: host2play 续期
+name: host2play 缁湡
 
 on:
   schedule:
-    - cron: '0 0,11,22 * * *'    # 触发点: 00:00, 11:00, 22:00 (UTC) = 北京 08:00, 19:00, 06:00
-    - cron: '30 5,16 * * *'      # 触发点: 05:30, 16:30 (UTC) = 北京 13:30, 00:30
+    - cron: '0 0,11,22 * * *'    # 瑙﹀彂鐐? 00:00, 11:00, 22:00 (UTC) = 鍖椾含 08:00, 19:00, 06:00
+    - cron: '30 5,16 * * *'      # 瑙﹀彂鐐? 05:30, 16:30 (UTC) = 鍖椾含 13:30, 00:30
   workflow_dispatch:
 
 permissions:
@@ -12,119 +12,71 @@ permissions:
 
 jobs:
   run-renew:
-    name: 执行续期
+    name: 鎵ц缁湡
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
     steps:
-      - name: 拉取仓库
+      - name: 鎷夊彇浠撳簱
         uses: actions/checkout@v4
 
-      - name: 配置 Python 环境
+      - name: 閰嶇疆 Python 鐜
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: 安装系统依赖
+      - name: 瀹夎绯荤粺渚濊禆
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb ffmpeg unzip curl jq
+          sudo apt-get install -y xvfb ffmpeg unzip curl
           wget -q -O /tmp/google-chrome-stable_current_amd64.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
           sudo dpkg -i /tmp/google-chrome-stable_current_amd64.deb || sudo apt-get install -f -y
 
-      - name: 安装 Python 依赖
+      - name: 瀹夎 Python 渚濊禆
         working-directory: host2play-renew
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: 启用 WARP 网络
+      - name: 鍚敤 WARP 缃戠粶
         uses: fscarmen/warp-on-actions@v1.3
         with:
           stack: dual
           mode: client
 
-      - name: 修复 DNS
+      - name: 淇 DNS
         run: |
-          echo "[INFO] 停用 systemd-resolved，设置公共 DNS..."
+          echo "[INFO] 鍋滅敤 systemd-resolved锛岃缃叕鍏?DNS..."
           sudo systemctl stop systemd-resolved 2>/dev/null || true
           sudo systemctl disable systemd-resolved 2>/dev/null || true
+
           sudo rm -f /etc/resolv.conf
           echo -e "nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 1.0.0.1" | sudo tee /etc/resolv.conf
+
           sleep 2
 
-      - name: 启动代理并执行续期
+          echo "[INFO] DNS 娴嬭瘯:"
+          nslookup host2play.gratis 1.1.1.1 || echo "[WARN] 瑙ｆ瀽澶辫触"
+
+          echo ""
+          echo "[INFO] 褰撳墠鍑哄彛 IP:"
+          curl -s --max-time 10 https://api.ipify.org && echo
+          echo "[INFO] WARP Trace:"
+          curl -s --max-time 10 https://www.cloudflare.com/cdn-cgi/trace | grep -E 'ip=|warp=|loc=' || true
+
+      - name: 鎵ц缁湡
         env:
           H2P_RENEW_URL: ${{ secrets.H2P_RENEW_URL }}
           H2P_COOKIE: ${{ secrets.H2P_COOKIE }}
           H2P_ACCOUNTS: ${{ secrets.H2P_ACCOUNTS }}
-          PROXY_URL: "socks5://127.0.0.1:1080"
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          NODE_LINK: ${{ secrets.NODE_LINK }}
+        working-directory: host2play-renew
         run: |
-          if [ -n "$NODE_LINK" ]; then
-            echo "[INFO] 获取 sing-box 最新版本..."
-            latest_version=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r .tag_name)
-            echo "[INFO] 最新稳定版本: $latest_version"
-            
-            curl -Lo sing-box.tar.gz "https://github.com/SagerNet/sing-box/releases/download/${latest_version}/sing-box-${latest_version#v}-linux-amd64.tar.gz"
-            tar -xzf sing-box.tar.gz
-            cp sing-box-*/sing-box .
-            chmod +x sing-box
-
-            echo "[INFO] 正在生成 sing-box 配置..."
-            UUID=$(echo $NODE_LINK | sed -n 's/.*tuic:\/\/\([^%]*\).*/\1/p')
-            PASS=$(echo $NODE_LINK | sed -n 's/.*%3A\([^@]*\)@.*/\1/p')
-            ADDR=$(echo $NODE_LINK | sed -n 's/.*@\([^:]*\):.*/\1/p')
-            PORT=$(echo $NODE_LINK | sed -n 's/.*:\([0-9]*\)?.*/\1/p')
-            SNI=$(echo $NODE_LINK | sed -n 's/.*sni=\([^&]*\).*/\1/p')
-            
-            cat <<EOF > config.json
-{
-  "log": { "level": "info" },
-  "outbounds": [
-    {
-      "type": "tuic",
-      "tag": "proxy",
-      "server": "$ADDR",
-      "server_port": $PORT,
-      "uuid": "$UUID",
-      "password": "$PASS",
-      "congestion_control": "bbr",
-      "alpn": ["h3"],
-      "tls": { "enabled": true, "server_name": "$SNI", "insecure": true }
-    }
-  ],
-  "inbounds": [
-    { "type": "socks", "tag": "socks-in", "listen": "127.0.0.1", "listen_port": 1080 }
-  ]
-}
-EOF
-            echo "[INFO] ✅ sing-box 配置已生成"
-
-            echo "[INFO] 启动 sing-box..."
-            ./sing-box run -c config.json > sing-box.log 2>&1 &
-            
-            echo "⏳ 等待代理就绪..."
-            MAX_RETRIES=15
-            for ((i=1; i<=MAX_RETRIES; i++)); do
-              if curl -s --socks5 127.0.0.1:1080 https://api.ip.sb/ip > /dev/null; then
-                echo "[INFO] ✅ 代理连接成功"
-                echo "📍 出口 IP: $(curl -s --socks5 127.0.0.1:1080 https://api.ip.sb/ip)"
-                break
-              fi
-              sleep 3
-              [ $i -eq $MAX_RETRIES ] && echo "❌ 代理连接超时" && exit 1
-            done
-          fi
-          
-          echo "🚀 开始执行续期脚本..."
-          cd host2play-renew
           mkdir -p output/screenshots
           python main.py
 
-      - name: 上传截图
+      - name: 涓婁紶鎴浘
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -133,7 +85,7 @@ EOF
           retention-days: 7
           if-no-files-found: ignore
 
-      - name: 上传日志
+      - name: 涓婁紶鏃ュ織
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -142,7 +94,7 @@ EOF
           retention-days: 7
           if-no-files-found: ignore
 
-      - name: 清理历史运行记录
+      - name: 娓呯悊鍘嗗彶杩愯璁板綍
         if: always()
         uses: Mattraks/delete-workflow-runs@v2
         with:
