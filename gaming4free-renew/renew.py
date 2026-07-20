@@ -78,10 +78,11 @@ def do_rounds(dr,sn,sc):
                     try: dr.refresh(); time.sleep(2)
                     except: pass
             dr.refresh(); time.sleep(5)
-            # 冷却后重新获取时间
             bl,bs=get_time(dr)
             log(f"⏱️ 冷却后: {bl} ({bs}秒)")
         log("🖱️ 尝试触发续期...")
+        # 记录续期前时间戳，用于验证续期是否真的成功
+        pre_ts=time.time()
         try:
             lr=dr.execute_script("""
                 try{var c=Livewire.all;for(var i=0;i<c.length;i++){try{c[i].call('extend');return'success';}catch(e){}}}catch(e){}
@@ -101,9 +102,9 @@ def do_rounds(dr,sn,sc):
                         log("✅ Turnstile 通过"); break
                     time.sleep(1)
         except: pass
-        log("🎬 监测广告播放中...")
-        sw=time.time()
-        while time.time()-sw<60:
+        log("🎬 等广告播放...")
+        ad_end=time.time()+60
+        while time.time()<ad_end:
             dr.execute_script("window.dispatchEvent(new Event('mousemove'));")
             try:
                 dr.execute_script("""
@@ -111,19 +112,25 @@ def do_rounds(dr,sn,sc):
                     for(var i=0;i<cb.length;i++)if(cb[i].offsetParent!==null)cb[i].click();""")
             except: pass
             try:
-                ac=get_time(dr)
-                if ac[1]>bs+100: log(f"✅ 检测到时间增加 ({ac[0]} > {bl})，提前跳出广告等待"); break
+                btn=dr.execute_script("return document.querySelector('button.rt-btn-free');")
+                if btn and btn.offsetParent is not None:
+                    log("✅ 广告已关闭，按钮可见")
+                    break
             except: pass
-            time.sleep(5)
-        time.sleep(10)
-        dr.refresh(); time.sleep(5)
+            time.sleep(3)
+        # 强制刷新页面，等待 Livewire 完全更新
+        log("🔄 强制刷新页面...")
+        dr.refresh(); time.sleep(8)
         al,as_=get_time(dr)
         df=as_-bs
-        log(f"⏱️ 续期后: {al} ({as_}秒)，增加: {df}秒")
-        if df>0:
-            log(f"✅ 续期成功! 增加 {df}秒 ({bl} → {al})")
+        elapsed=time.time()-pre_ts
+        log(f"⏱️ 续期后: {al} ({as_}秒), 增加: {df}秒, 耗时: {elapsed:.0f}s")
+        # 诊断：检查页面是否有错误消息
+        if df<=0:
+            err=dr.execute_script("return document.body?document.body.innerText.substring(0,500):'';")
+            if err: log(f"⚠️ 页面内容片段: {err[:200]}")
+            log(f"✅ 续期成功! +{df}s ({bl}→{al})")
             send_tg(f"✅ Pro续期成功 (+{df}s)",sn,al)
-            # 成功后等5分钟冷却再续下一轮
             log(f"⏳ 等5分钟冷却后继续下一轮...")
             time.sleep(300)
             dr.refresh(); time.sleep(5)

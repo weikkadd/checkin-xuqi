@@ -18,29 +18,53 @@ def pars_s(ms):
     if m: return int(m.group(1))*3600
     return 0
 def get_time(dr):
+    """从页面提取服务器剩余时间（秒）和显示字符串"""
     try:
-        pt=dr.execute_script("return document.body?document.body.innerText.substring(0,2000):'';")
-        if not pt: return("(未知)",0)
+        # 方法1: 尝试从 Livewire 组件数据中获取
+        pt=dr.execute_script("""
+            var result='';
+            try{
+                var c=Livewire.all;
+                for(var i=0;i<c.length;i++){
+                    try{
+                        var data=c[i].data;
+                        if(data && data.expires){result=data.expires;break;}
+                        if(data && data.remaining){result=data.remaining;break;}
+                        if(data && data.server_time){result=data.server_time;break;}
+                    }catch(e){}
+                }
+            }catch(e){}
+            return result||'';""")
+        if pt:
+            secs=pars_s(pt)
+            if secs>0:
+                h,m,s=secs//3600,(secs%3600)//60,secs%60
+                log(f"✅ 从 Livewire 数据获取: {pt} ({secs}s)")
+                return(f"{h:02d}:{m:02d}:{s:02d}",secs)
+        
+        # 方法2: 从页面文本中提取，优先匹配明确的时间语义
+        pt=dr.execute_script("return document.body?document.body.innerText.substring(0,3000):'';")
+        if not pt: return("(未知",0)
+        
+        # 找包含 "expires" 或 "time left" 的行
+        for line in pt.split('\n'):
+            ll=line.lower()
+            if any(kw in ll for kw in ['expires','time left','server expires','renewal']):
+                lt=re.findall(r'(\d{1,2}:\d{2}:\d{2})',line)
+                if lt:
+                    log(f"✅ 关键字行: {lt[0]} (行: {line.strip()[:100]})")
+                    return(lt[0],pars_s(lt[0]))
+        
+        # 回退: 找第一个 >= 1小时的时间（过滤短倒计时如 00:03:00）
         tm=re.findall(r'(\d{1,2}:\d{2}:\d{2})',pt)
-        if tm:
-            log(f"🔍 所有匹配时间: {tm}")
-            # 优先匹配精确关键词附近的 HH:MM:SS
-            for line in pt.split('\n'):
-                ll=line.lower()
-                # 只匹配这些明确的时间语义，不匹配 generic 'remaining'
-                if any(kw in ll for kw in ['expires','time left','server time','renewal','next renewal','cooldown']):
-                    lt=re.findall(r'(\d{1,2}:\d{2}:\d{2})',line)
-                    if lt:
-                        log(f"✅ 选中精确关键词: {lt[0]} (行: {line.strip()[:100]})")
-                        return(lt[0],pars_s(lt[0]))
-            # 回退：找第一个超过1小时的大时间（服务器剩余时间通常 > 1h）
-            # 过滤掉 00:03:00 这类短倒计时
-            valid=[t for t in tm if pars_s(t)>=3600]
-            if valid:
-                best=max(valid,key=pars_s)
-                log(f"✅ 回退选最大有效时间: {best} ({pars_s(best)}s)")
-                return(best,pars_s(best))
-            log(f"⚠️ 未找到有效时间，使用第一个: {tm[0]}")
-            return(tm[0],pars_s(tm[0]))
+        valid=[t for t in tm if pars_s(t)>=3600]
+        if valid:
+            best=max(valid,key=pars_s)
+            log(f"🔍 所有匹配时间: {tm}, 选中最大有效: {best} ({pars_s(best)}s)")
+            return(best,pars_s(best))
+        
+        log(f"⚠️ 未找到有效时间, 所有匹配: {tm}")
         return("(未找到)",0)
-    except: return("(错误)",0)
+    except Exception as e:
+        log(f"❌ get_time 错误: {e}")
+        return("(错误)",0)
