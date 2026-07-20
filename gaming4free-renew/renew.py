@@ -65,12 +65,6 @@ def do_rounds(dr,sn,sc):
         log(f"⏱️ 当前: {bl} ({bs}s)")
         if bs>=THRESHOLD:
             log("✅ 已达目标时长"); ok=True; break
-        try:
-            pt=dr.execute_script("return document.body.innerText")
-            if "05:00" in pt and "cd" in pt:
-                log("⏳ 5分钟冷却，等待310s")
-                time.sleep(310); dr.refresh(); time.sleep(10); continue
-        except: pass
         ci=chk_cd(dr)
         if ci and ci.get('cooldown'):
             rem=ci.get('remaining',0)
@@ -119,7 +113,12 @@ def do_rounds(dr,sn,sc):
         log(f"⏱️ 续期后: {al2} ({as2}s), 增加: {df}s")
         if df>0:
             log(f"✅ 成功! +{df}s ({bl}→{al2})")
-            send_tg(f"✅ Pro续期成功 (+{df}s)",sn,al2); break
+            send_tg(f"✅ Pro续期成功 (+{df}s)",sn,al2)
+            # 成功后等5分钟冷却再续下一轮
+            log("⏳ 等5分钟冷却后继续...")
+            time.sleep(300)
+            dr.refresh(); time.sleep(5)
+            continue
         else:
             log(f"❌ 失败，继续下一轮"); time.sleep(10)
 
