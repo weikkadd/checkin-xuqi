@@ -75,7 +75,12 @@ def do_rounds(dr,sn,sc):
         if ci and ci.get('cooldown'):
             rem=ci.get('remaining',0)
             log(f"⏳ 冷却 {rem}s")
-            time.sleep(min(rem,300)); dr.refresh(); time.sleep(5); continue
+            for _ in range(rem):
+                time.sleep(1)
+                if (_ % 10)==0:
+                    try: dr.refresh(); time.sleep(2)
+                    except: pass
+            dr.refresh(); time.sleep(5); continue
         log("🖱️ 触发续期")
         try:
             lr=dr.execute_script("""
