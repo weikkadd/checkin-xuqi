@@ -27,7 +27,7 @@ RENEW_URL = os.getenv("H2P_RENEW_URL", "")
 COOKIE_STR = os.getenv("H2P_COOKIE", "")
 WARP_PROXY = os.getenv("WARP_PROXY", "")
 PROXY_URL = os.getenv("PROXY_URL", "")
-RENEW_THRESHOLD_SECONDS = 25 * 3600  # 剩余超过25小时则跳过
+RENEW_THRESHOLD_SECONDS = 25 * 3600
 MAX_RETRY = 5
 PAGE_TIMEOUT = 180
 TG_TOKEN = os.getenv("TG_BOT_TOKEN", "")
@@ -77,7 +77,6 @@ def tg(msg: str, silent: bool = False):
 
 
 def parse_expires(text: str) -> int:
-    """解析剩余时间文本，返回秒数"""
     if not text:
         return -1
     m = re.search(r"(\d{1,2}):(\d{2}):(\d{2})", text)
@@ -87,7 +86,6 @@ def parse_expires(text: str) -> int:
 
 
 def get_server_info(page):
-    """获取服务器信息和剩余时间"""
     server_id = "Unknown"
     expires_text = "Unknown"
     expires_sec = -1
@@ -116,7 +114,6 @@ def get_server_info(page):
 
 
 def debug_dump(page, label=""):
-    """调试：保存截图和页面源码"""
     try:
         shot_path = SHOT_DIR / f"debug_{label}_{int(time.time())}.png"
         page.get_screenshot(path=str(shot_path))
@@ -125,10 +122,10 @@ def debug_dump(page, label=""):
         pass
     try:
         src_path = SHOT_DIR / f"debug_src_{label}_{int(time.time())}.txt"
-        src_path.write_text(page.html[:15000], encoding="utf-8")
-        log.info(f"页面源码已保存: {src_path} (前15000字符)")
+        src_path.write_text(page.html[:20000], encoding="utf-8")
+        log.info(f"页面源码已保存: {src_path} (前20000字符)")
         
-        # 额外保存所有按钮信息
+        # 保存所有按钮信息
         btns_path = SHOT_DIR / f"debug_btns_{label}_{int(time.time())}.txt"
         all_buttons = page.eles('css:button')
         btn_info = []
@@ -137,11 +134,12 @@ def debug_dump(page, label=""):
                 text = btn.text[:50] if btn.text else "no text"
                 cls = btn.attr("class") or ""
                 disp = btn.is_displayed()
-                btn_info.append(f"  btn[{i}]: text='{text}' class='{cls}' displayed={disp}")
+                hid = btn.is_hidden()
+                btn_info.append(f"  btn[{i}]: text='{text}' class='{cls}' displayed={disp} hidden={hid}")
             except Exception:
                 pass
         btns_path.write_text("\n".join(btn_info), encoding="utf-8")
-        log.info(f"按钮列表已保存: {btns_path}")
+        log.info(f"按钮列表已保存: {btns_path} ({len(all_buttons)}个按钮)")
     except Exception as e:
         log.warning(f"保存调试信息失败: {e}")
 
@@ -163,7 +161,7 @@ def solve_recaptcha_audio(page) -> bool:
     log.info("尝试通过 src 属性查找 reCAPTCHA iframe...")
     recaptcha_frame = page.get_frame('@src*="recaptcha"')
     if recaptcha_frame:
-        log.info(f"找到 reCAPTCHA iframe: src={recaptcha_frame.src[:80] if hasattr(recaptcha_frame, 'src') else 'N/A'}")
+        log.info(f"找到 reCAPTCHA iframe")
     else:
         log.info("尝试通过 title 属性查找 reCAPTCHA iframe...")
         recaptcha_frame = page.get_frame('@title*="recaptcha"')
@@ -245,14 +243,7 @@ def solve_recaptcha_audio(page) -> bool:
 
         if not challenge_frame:
             log.info("未找到 challenge iframe，假设已通过验证")
-            try:
-                body_text = page.run_js("return document.body.innerText")
-                if "renew" in body_text.lower() or "success" in body_text.lower() or "extended" in body_text.lower():
-                    log.info("页面显示续期成功")
-                    return True
-            except Exception:
-                pass
-            return False
+            return True
 
         # 在 challenge iframe 中点击音频按钮
         audio_btn = None
@@ -275,7 +266,7 @@ def solve_recaptcha_audio(page) -> bool:
             log.info("已点击音频按钮")
             time.sleep(random.uniform(3, 5))
         else:
-            log.info("未找到音频按钮，可能已有图片验证码或其他类型")
+            log.info("未找到音频按钮")
 
         # 下载音频文件
         audio_link = None
@@ -293,15 +284,6 @@ def solve_recaptcha_audio(page) -> bool:
                 pass
 
         if not audio_link:
-            try:
-                page_text = challenge_frame.ele('tag:body', timeout=3).ele('tag:innerText', timeout=2).text
-                if "自动查询" in page_text or "automated queries" in page_text:
-                    log.error("IP 被 Google 拦截")
-                    debug_dump(page, f"blocked_{attempt}")
-                    return False
-            except Exception:
-                pass
-
             log.warning(f"未找到音频下载链接，重试...")
             debug_dump(page, f"no_audio_link_{attempt}")
             time.sleep(2)
@@ -313,7 +295,7 @@ def solve_recaptcha_audio(page) -> bool:
         try:
             resp = requests.get(audio_url, timeout=30)
             audio_file.write_bytes(resp.content)
-            log.info(f"音频已下载到: {audio_file} ({len(resp.content)} bytes)")
+            log.info(f"音频已下载: {len(resp.content)} bytes")
         except Exception as e:
             log.warning(f"下载音频失败: {e}")
             continue
@@ -369,7 +351,7 @@ def solve_recaptcha_audio(page) -> bool:
         try:
             remaining_challenge = page.get_frame('@src*="bframe"')
             if not remaining_challenge:
-                log.info("reCAPTCHA 验证通过（无剩余 challenge iframe）")
+                log.info("reCAPTCHA 验证通过")
                 return True
             else:
                 log.info("仍有 challenge iframe，继续下一轮尝试")
@@ -383,7 +365,6 @@ def solve_recaptcha_audio(page) -> bool:
 
 
 def inject_cookies(page, cookie_str: str):
-    """注入 Cookie"""
     if not cookie_str:
         return
     for item in cookie_str.split(";"):
@@ -397,7 +378,6 @@ def inject_cookies(page, cookie_str: str):
 
 
 def create_proxy_auth_extension(proxy_url):
-    """创建代理认证扩展"""
     import zipfile
 
     if "@" not in proxy_url:
@@ -546,7 +526,7 @@ def run_one(label: str, renew_url: str, cookie_str: str):
 
         if not renew_btn:
             page.get_screenshot(path=str(SHOT_DIR / f"error_{label}_no_btn.png"))
-            log.error("未找到续期按钮，已保存截图")
+            log.error("未找到续期按钮")
             debug_dump(page, "no_renew_btn")
             return {"label": label, "sid": server_id, "ok": False, "msg": "未找到按钮"}
 
@@ -560,18 +540,45 @@ def run_one(label: str, renew_url: str, cookie_str: str):
         # 处理 reCAPTCHA
         captcha_passed = solve_recaptcha_audio(page)
         if captcha_passed:
-            log.info("reCAPTCHA 通过，等待页面自动处理...")
+            log.info("reCAPTCHA 通过，等待续期请求提交...")
             
             # 保存当前页面状态
             debug_dump(page, "after_captcha")
             
-            # 关键改动：reCAPTCHA 通过后，**不再寻找确认按钮**
-            # 而是等待页面自动刷新/更新
-            log.info("等待 15 秒让续期请求自动提交...")
-            time.sleep(15)
+            # 关键改动：reCAPTCHA 通过后，**再次点击续期按钮**
+            # 因为第一次点击可能只触发了 reCAPTCHA，没有真正提交
+            log.info("重新查找并点击续期按钮以提交续期请求...")
+            time.sleep(3)
             
-            # 再次保存状态
-            debug_dump(page, "after_wait")
+            renew_btn2 = None
+            for btn_text in ["Renew server", "Renew", "Extend", "Continue"]:
+                try:
+                    renew_btn2 = page.ele(f"text:{btn_text}", timeout=5)
+                    if renew_btn2:
+                        log.info(f"找到续期按钮（第二次）: text:{btn_text}")
+                        break
+                except Exception:
+                    pass
+            
+            if not renew_btn2:
+                try:
+                    renew_btn2 = page.ele('css:button.purple', timeout=5)
+                    if renew_btn2:
+                        log.info("找到紫色续期按钮（第二次）")
+                except Exception:
+                    pass
+            
+            if renew_btn2:
+                log.info("再次点击续期按钮...")
+                renew_btn2.click()
+                log.info("等待续期处理...")
+                time.sleep(20)
+            else:
+                log.info("未找到续期按钮，等待页面自动处理...")
+                time.sleep(20)
+            
+            # 保存最终状态
+            debug_dump(page, "after_final_wait")
 
             # 刷新页面同步状态
             log.info("刷新页面同步状态...")
