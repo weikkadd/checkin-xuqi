@@ -1,3 +1,5 @@
+import os
+
 RENEW_URL=os.environ.get("GAME4FREE_RENEW_URL","").strip()
 COOKIE=os.environ.get("GAME4FREE_COOKIE","").strip()
 ACCOUNTS=[]
