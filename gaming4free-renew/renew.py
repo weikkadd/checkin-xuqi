@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gaming4Free Renew Pro v21 - 实时时间监测续期策略"""
+"""Gaming4Free Renew Pro v23 - 实时时间监测续期策略"""
 import os,sys,time,re,urllib.parse,urllib.request
 from datetime import datetime
 try:
@@ -13,7 +13,7 @@ from cd import *
 from tg import send_tg
 
 def main():
-    log("========== 开始处理服务器账号 (Pro v21) ==========")
+    log("========== 开始处理服务器账号 (Pro v23) ==========")
     svrs=[]
     if RENEW_URL and COOKIE:
         nm="我的服务器"
@@ -110,37 +110,33 @@ def do_rounds(dr,sb,sn,sc):
 
         try:
             # ===== 纯按钮点击策略 =====
-            # 1. 找到 +90min 按钮
+            # 1. 找到 +90min 按钮并收集详细信息
             btn_result=dr.execute_script("""
                 var result=null;
-                var allBtns=document.querySelectorAll('button,[role=button],a[class*="btn"],a[class*="Btn"]');
-                for(var i=0;i<allBtns.length;i++){
-                    var t=(allBtns[i].innerText||allBtns[i].textContent||'').trim();
+                // 用 Array.from 遍历所有元素避免 querySelectorAll 的选择器冲突
+                var allEls = Array.from(document.querySelectorAll('*'));
+                for(var i=0;i<allEls.length;i++){
+                    var el=allEls[i];
+                    // 只检查可交互元素
+                    if(el.tagName!=='BUTTON' && el.tagName!=='A' && el.tagName!=='SPAN' && el.tagName!=='DIV') continue;
+                    if(el.getAttribute('role')!=='button' && el.tagName!=='BUTTON' && el.tagName!=='A') continue;
+                    var t=(el.innerText||el.textContent||'').trim();
                     if(t.indexOf('90')!==-1 && t.indexOf('min')!==-1){
-                        var rect=allBtns[i].getBoundingClientRect();
+                        var rect=el.getBoundingClientRect();
+                        var attrs={};
+                        for(var j=0;j<el.attributes.length;j++){
+                            attrs[el.attributes[j].name]=el.attributes[j].value;
+                        }
                         result={
-                            idx:i,
+                            tagName:el.tagName,
                             text:t,
-                            wireClick:allBtns[i].getAttribute('wire:click'),
-                            disabled:allBtns[i].disabled,
+                            className:el.className,
+                            disabled:!!el.disabled,
                             visible:rect.width>0&&rect.height>0,
-                            tagName:allBtns[i].tagName
+                            hasOnClick:!!el.onclick,
+                            attributes:JSON.stringify(attrs)
                         };
                         break;
-                    }
-                }
-                if(!result){
-                    var btnClasses=document.querySelectorAll('[class*="btn"]');
-                    for(var i=0;i<btnClasses.length;i++){
-                        var parent=btnClasses[i].tagName==='BUTTON'?btnClasses[i]:btnClasses[i].querySelector('button');
-                        if(parent){
-                            var t=(parent.innerText||parent.textContent||'').trim();
-                            if(t.indexOf('90')!==-1 && t.indexOf('min')!==-1){
-                                var rect=parent.getBoundingClientRect();
-                                result={text:t,wireClick:parent.getAttribute('wire:click'),disabled:parent.disabled,visible:rect.width>0&&rect.height>0,tagName:parent.tagName};
-                                break;
-                            }
-                        }
                     }
                 }
                 return result?JSON.stringify(result):'not_found';
@@ -155,10 +151,11 @@ def do_rounds(dr,sb,sn,sc):
             import json
             try:
                 bi=json.loads(btn_result)
-                log(f"🔍 找到按钮: text={bi.get('text')}, wire:click={bi.get('wireClick')}, disabled={bi.get('disabled')}, visible={bi.get('visible')}")
+                log(f"🔍 找到按钮: text={bi.get('text')}, tagName={bi.get('tagName')}, disabled={bi.get('disabled')}, visible={bi.get('visible')}, onClick={bi.get('hasOnClick')}")
+                log(f"🔍 属性: {bi.get('attributes','')}")
             except:
                 bi={}
-                log(f"🔍 按钮信息: {btn_result[:200]}")
+                log(f"🔍 按钮信息: {btn_result[:300]}")
 
             if bi.get('disabled') or not bi.get('visible'):
                 log(f"⚠️ 按钮不可用 (disabled={bi.get('disabled')}, visible={bi.get('visible')})")
@@ -166,23 +163,27 @@ def do_rounds(dr,sb,sn,sc):
                 time.sleep(10)
                 continue
 
-            # 2. 滚动到按钮并点击（不用 f-string，避免 JS 对象字面量冲突）
-            btn_idx=bi.get('idx',0)
-            click_js = (
-                "var allBtns=document.querySelectorAll('button,[role=button],a[class*=\\'btn\\'],a[class*=\\'Btn\\']);"
-                "if(allBtns[" + str(btn_idx) + "]){"
-                "var b=allBtns[" + str(btn_idx) + "];"
-                "b.scrollIntoView({block:'center',behavior:'instant'});"
-                "b.dispatchEvent(new MouseEvent('mouseover',{bubbles:true,cancelable:true}));"
-                "b.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true}));"
-                "b.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true}));"
-                "b.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true}));"
-                "return 'clicked';"
-                "}"
-                "return 'not_found';"
-            )
-            dr.execute_script(click_js)
-            log("🖱️ 按钮点击事件已触发")
+            # 2. 通过遍历 DOM 找到 +90min 按钮并点击
+            click_js = """
+                var allEls = Array.from(document.querySelectorAll('*'));
+                for(var i=0;i<allEls.length;i++){
+                    var el=allEls[i];
+                    if(el.tagName!=='BUTTON' && el.tagName!=='A' && el.tagName!=='SPAN' && el.tagName!=='DIV') continue;
+                    if(el.getAttribute('role')!=='button' && el.tagName!=='BUTTON' && el.tagName!=='A') continue;
+                    var t=(el.innerText||el.textContent||'').trim();
+                    if(t.indexOf('90')!==-1 && t.indexOf('min')!==-1){
+                        var rect=el.getBoundingClientRect();
+                        if(rect.width>0 && rect.height>0 && !el.disabled){
+                            el.scrollIntoView({block:'center'});
+                            el.click();
+                            return 'clicked:'+el.tagName+':'+t.substring(0,30);
+                        }
+                    }
+                }
+                return 'not_found';
+            """
+            click_result=dr.execute_script(click_js)
+            log(f"🖱️ 点击结果: {click_result}")
 
             # ===== 关键：实时监测时间变化（v14 成功的核心逻辑）=====
             log("⏳ 等待广告弹窗处理，实时监测时间...")
@@ -210,7 +211,7 @@ def do_rounds(dr,sb,sn,sc):
 
                 # 检查按钮是否重新可见
                 btn_vis=dr.execute_script("""
-                    var allBtns=document.querySelectorAll('button,[role=button],a[class*="btn"],a[class*="Btn"]');
+                    var allBtns=document.querySelectorAll('button,[role=button]');
                     for(var i=0;i<allBtns.length;i++){
                         var t=(allBtns[i].innerText||allBtns[i].textContent||'').trim();
                         if(t.indexOf('90')!==-1 && t.indexOf('min')!==-1){
