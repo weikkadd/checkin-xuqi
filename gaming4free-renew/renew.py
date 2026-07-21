@@ -46,7 +46,21 @@ def main():
                                 n,v=it.split("=",1)
                                 try: dr.add_cookie({"name":n.strip(),"value":v.strip(),"domain":".gaming4free.net","path":"/","secure":True})
                                 except: pass
-                        dr.refresh(); time.sleep(10)
+                        dr.refresh(); time.sleep(5)
+                        # Cookie 注入后等待页面加载，处理可能的 Turnstile
+                        log("⏳ 等待页面加载...")
+                        for _ in range(30):
+                            try:
+                                if dr.find_elements('css selector','iframe[src*="challenges.cloudflare.com"]'):
+                                    log("🛡️ 检测到 Turnstile，等待通过...")
+                                    time.sleep(5)
+                                    continue
+                                title=dr.title
+                                if title and "Login" not in title and "login" not in title:
+                                    log(f"✅ 页面加载完成: {title}")
+                                    break
+                            except: pass
+                            time.sleep(2)
                     do_rounds(dr,sn,sc)
             except Exception as e:
                 log(f"❌ 异常: {e}")
