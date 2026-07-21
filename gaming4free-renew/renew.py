@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gaming4Free Renew Pro v25 - 不关弹窗，等待 Turnstile 验证 + 广告结束"""
+"""Gaming4Free Renew Pro v27 - 延长等待 + 自动重试 Turnstile"""
 import os,sys,time,re,urllib.parse,urllib.request
 from datetime import datetime
 try:
@@ -13,7 +13,7 @@ from cd import *
 from tg import send_tg
 
 def main():
-    log("========== 开始处理服务器账号 (Pro v25) ==========")
+    log("========== 开始处理服务器账号 (Pro v27) ==========")
     svrs=[]
     if RENEW_URL and COOKIE:
         nm="我的服务器"
@@ -108,108 +108,103 @@ def do_rounds(dr,sb,sn,sc):
         pre_ts=time.time()
         pre_time=bs
 
-        try:
-            # 1. 找到 +90min 按钮
-            btn_result=dr.execute_script("""
-                var result=null;
-                var allEls = Array.from(document.querySelectorAll('*'));
-                for(var i=0;i<allEls.length;i++){
-                    var el=allEls[i];
-                    if(el.tagName!=='BUTTON' && el.tagName!=='A' && el.tagName!=='SPAN' && el.tagName!=='DIV') continue;
-                    if(el.getAttribute('role')!=='button' && el.tagName!=='BUTTON' && el.tagName!=='A') continue;
-                    var t=(el.innerText||el.textContent||'').trim();
-                    if(t.indexOf('90')!==-1 && t.indexOf('min')!==-1){
-                        var rect=el.getBoundingClientRect();
-                        var attrs={};
-                        for(var j=0;j<el.attributes.length;j++){
-                            attrs[el.attributes[j].name]=el.attributes[j].value;
-                        }
-                        result={
-                            tagName:el.tagName,
-                            text:t,
-                            className:el.className,
-                            disabled:!!el.disabled,
-                            visible:rect.width>0&&rect.height>0,
-                            hasOnClick:!!el.onclick,
-                            attributes:JSON.stringify(attrs)
-                        };
-                        break;
-                    }
-                }
-                return result?JSON.stringify(result):'not_found';
-            """)
-            
-            if btn_result == 'not_found':
-                log("❌ 未找到 +90min 按钮!")
-                scr(sb, f"fail_round{cr}_no_btn")
-                time.sleep(10)
-                continue
-            
-            import json
+        # 最多重试 3 次（Turnstile 可能第一次失败，刷新后第二次成功）
+        max_retries=3
+        for attempt in range(max_retries):
+            if attempt > 0:
+                log(f"🔄 第 {attempt+1} 次重试...")
+                dr.refresh(); time.sleep(5)
+                bl,bs=get_time(dr)
+                if bs>=THRESHOLD:
+                    log(f"✅ 已达到目标时长")
+                    try: send_tg(f"🎉 已达到目标时长 {bl}",sn,bl)
+                    except: pass
+                    return True
+
             try:
-                bi=json.loads(btn_result)
-                log(f"🔍 找到按钮: text={bi.get('text')}, tagName={bi.get('tagName')}, disabled={bi.get('disabled')}, visible={bi.get('visible')}")
-                log(f"🔍 @click: {bi.get('attributes','')[:200]}")
-            except:
-                bi={}
-                log(f"🔍 按钮信息: {btn_result[:300]}")
-
-            if bi.get('disabled') or not bi.get('visible'):
-                log(f"⚠️ 按钮不可用")
-                scr(sb, f"fail_round{cr}_btn_disabled")
-                time.sleep(10)
-                continue
-
-            # 2. 点击按钮 — 这会触发 showExtendCaptcha()，弹出 Turnstile
-            click_js = """
-                var allEls = Array.from(document.querySelectorAll('*'));
-                for(var i=0;i<allEls.length;i++){
-                    var el=allEls[i];
-                    if(el.tagName!=='BUTTON' && el.tagName!=='A' && el.tagName!=='SPAN' && el.tagName!=='DIV') continue;
-                    if(el.getAttribute('role')!=='button' && el.tagName!=='BUTTON' && el.tagName!=='A') continue;
-                    var t=(el.innerText||el.textContent||'').trim();
-                    if(t.indexOf('90')!==-1 && t.indexOf('min')!==-1){
-                        var rect=el.getBoundingClientRect();
-                        if(rect.width>0 && rect.height>0 && !el.disabled){
-                            el.scrollIntoView({block:'center'});
-                            el.click();
-                            return 'clicked:'+el.tagName+':'+t.substring(0,30);
+                # 1. 找到 +90min 按钮
+                btn_result=dr.execute_script("""
+                    var result=null;
+                    var allEls = Array.from(document.querySelectorAll('*'));
+                    for(var i=0;i<allEls.length;i++){
+                        var el=allEls[i];
+                        if(el.tagName!=='BUTTON' && el.tagName!=='A' && el.tagName!=='SPAN' && el.tagName!=='DIV') continue;
+                        if(el.getAttribute('role')!=='button' && el.tagName!=='BUTTON' && el.tagName!=='A') continue;
+                        var t=(el.innerText||el.textContent||'').trim();
+                        if(t.indexOf('90')!==-1 && t.indexOf('min')!==-1){
+                            var rect=el.getBoundingClientRect();
+                            result={
+                                tagName:el.tagName,
+                                text:t,
+                                disabled:!!el.disabled,
+                                visible:rect.width>0&&rect.height>0,
+                            };
+                            break;
                         }
                     }
-                }
-                return 'not_found';
-            """
-            click_result=dr.execute_script(click_js)
-            log(f"🖱️ 点击结果: {click_result}")
-
-            # ===== 关键：不关弹窗，等待 Turnstile 验证 + 广告结束 =====
-            # v14 成功的原因：不主动关弹窗，而是等待广告播放完毕（=Turnstile验证通过）
-            # 然后时间会自动增加
-            
-            log("⏳ 等待 Turnstile 验证和广告结束...")
-            ad_end=time.time()+120
-            renewed=False
-            
-            while time.time()<ad_end:
-                # 每 3 秒检查一次时间 — v14 成功的核心
-                try:
-                    ct,cs=get_time(dr)
-                    diff=cs-pre_time
-                    if diff > 300:
-                        log(f"✅ 检测到时间增加 ({ct} > {bl}), 增加 {diff}秒")
-                        renewed=True
-                        break
-                except: pass
+                    return result?JSON.stringify(result):'not_found';
+                """)
                 
-                time.sleep(3)
-            
-            if not renewed:
-                log("⚠️ 等待超时，检查最终结果...")
-                scr(sb, f"fail_round{cr}_timeout")
+                if btn_result == 'not_found':
+                    log("❌ 未找到 +90min 按钮!")
+                    scr(sb, f"fail_round{cr}_attempt{attempt+1}_no_btn")
+                    break
+                
+                import json
+                bi=json.loads(btn_result)
+                log(f"🔍 按钮: {bi.get('text')}, disabled={bi.get('disabled')}, visible={bi.get('visible')}")
 
-        except Exception as e:
-            log(f"❌ 续期异常: {e}")
-            scr(sb, f"fail_round{cr}_exception")
+                if bi.get('disabled') or not bi.get('visible'):
+                    log(f"⚠️ 按钮不可用")
+                    scr(sb, f"fail_round{cr}_attempt{attempt+1}_btn_disabled")
+                    break
+
+                # 2. 点击按钮
+                click_js = """
+                    var allEls = Array.from(document.querySelectorAll('*'));
+                    for(var i=0;i<allEls.length;i++){
+                        var el=allEls[i];
+                        if(el.tagName!=='BUTTON' && el.tagName!=='A' && el.tagName!=='SPAN' && el.tagName!=='DIV') continue;
+                        if(el.getAttribute('role')!=='button' && el.tagName!=='BUTTON' && el.tagName!=='A') continue;
+                        var t=(el.innerText||el.textContent||'').trim();
+                        if(t.indexOf('90')!==-1 && t.indexOf('min')!==-1){
+                            var rect=el.getBoundingClientRect();
+                            if(rect.width>0 && rect.height>0 && !el.disabled){
+                                el.scrollIntoView({block:'center'});
+                                el.click();
+                                return 'clicked:'+el.tagName+':'+t.substring(0,30);
+                            }
+                        }
+                    }
+                    return 'not_found';
+                """
+                click_result=dr.execute_script(click_js)
+                log(f"🖱️ 点击: {click_result}")
+
+                # 3. 等待 Turnstile 验证 — 延长到 180 秒
+                log("⏳ 等待 Turnstile 验证和续期生效 (最长 180s)...")
+                ad_end=time.time()+180
+                renewed=False
+                while time.time()<ad_end:
+                    try:
+                        ct,cs=get_time(dr)
+                        diff=cs-pre_time
+                        if diff > 300:
+                            log(f"✅ 检测到时间增加 ({ct} > {bl}), 增加 {diff}秒")
+                            renewed=True
+                            break
+                    except: pass
+                    time.sleep(3)
+                
+                if renewed:
+                    break  # 续期成功，跳出重试循环
+
+                log(f"⚠️ 本轮未成功，准备重试...")
+                scr(sb, f"fail_round{cr}_attempt{attempt+1}")
+                
+            except Exception as e:
+                log(f"❌ 续期异常: {e}")
+                scr(sb, f"fail_round{cr}_attempt{attempt+1}_exception")
 
         # 最终检查
         al,as_=get_time(dr)
