@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-host2play 自动续期脚本
-=====================
+host2play 自动续期脚本（视频广告版）
+===================================
 - 使用 DrissionPage 自动化浏览器操作
 - 支持代理配置（家宽代理 / WARP）
 - 广告视频播放后自动续期
@@ -127,65 +127,80 @@ def debug_dump(page, label=""):
         pass
 
 
+# ==========================================================
+# 广告视频处理（新版）
+# ==========================================================
+
 def handle_ad_video(page):
     """处理广告视频 - 点击播放并等待完成"""
-    log.info("等待广告视频出现...")
-    
-    # 等待视频播放器出现（最多等待30秒）
+    log.info("等待广告播放器出现...")
+
+    # 1. 等待播放器和大播放按钮出现
+    play_btn = None
+    video_area = None
+
     for wait in range(30):
         try:
-            # 查找视频元素
-            video = page.ele('css:video', timeout=2)
-            if video:
-                log.info("找到视频元素")
-                break
-        except Exception:
-            pass
-        
-        # 查找播放按钮
-        try:
-            play_btn = page.ele('css:button[aria-label="Play"]', timeout=2)
+            # 常见 Video.js 播放器大按钮
+            play_btn = page.ele('css:.vjs-big-play-button', timeout=2)
             if play_btn:
-                log.info("找到播放按钮，点击播放")
-                play_btn.click()
-                time.sleep(2)
+                log.info("找到大播放按钮 (.vjs-big-play-button)")
                 break
         except Exception:
             pass
-        
-        # 查找跳过按钮
+
         try:
-            skip_btn = page.ele('css:button:contains("Skip")', timeout=2)
-            if skip_btn:
-                log.info("找到跳过按钮，点击跳过")
-                skip_btn.click()
-                time.sleep(2)
-                return True
+            # 整个视频区域（兜底）
+            video_area = page.ele('css:.video-js', timeout=2)
+            if video_area:
+                log.info("找到视频区域 (.video-js)")
+                break
         except Exception:
             pass
-        
-        time.sleep(1)
-    
-    # 尝试通过 JS 播放视频
-    try:
-        page.run_js("var v=document.querySelector('video');if(v){v.play();}")
-        log.info("通过 JS 播放视频")
-    except Exception:
-        pass
-    
-    # 等待视频播放完成（假设视频最长60秒）
-    log.info("等待广告视频播放...")
-    for check in range(60):
+
         try:
-            # 检查视频是否结束
+            # 直接找 <video> 元素（有些页面还是用原生 video）
+            video = page.ele('tag:video', timeout=2)
+            if video:
+                log.info("找到 <video> 元素")
+                video_area = video
+                break
+        except Exception:
+            pass
+
+        time.sleep(1)
+
+    # 2. 点击播放按钮或视频区域
+    try:
+        if play_btn:
+            log.info("点击大播放按钮...")
+            play_btn.click()
+        elif video_area:
+            log.info("点击视频区域开始播放...")
+            video_area.click()
+        else:
+            log.warning("未找到播放按钮或视频区域，尝试用 JS 播放")
+            try:
+                page.run_js("var v=document.querySelector('video');if(v){v.play();}")
+                log.info("通过 JS 播放 video 元素")
+            except Exception:
+                log.warning("JS 播放失败，继续后续流程")
+    except Exception as e:
+        log.warning(f"点击播放失败: {e}")
+
+    # 3. 等待广告播放完成或出现跳过按钮
+    log.info("等待广告视频播放...")
+    for check in range(90):  # 最多等 90 秒
+        try:
+            # 检查 video 是否结束
             ended = page.run_js("var v=document.querySelector('video');return v&&v.ended;")
             if ended:
-                log.info("视频播放完成")
+                log.info("检测到 video 播放结束")
                 return True
         except Exception:
             pass
-        
-        # 检查是否有跳过按钮
+
+        # 有些广告会出现 Skip 按钮
         try:
             skip_btn = page.ele('css:button:contains("Skip")', timeout=1)
             if skip_btn:
@@ -195,10 +210,19 @@ def handle_ad_video(page):
                 return True
         except Exception:
             pass
-        
+
+        # 有些广告结束后会隐藏播放器或显示“已完成”字样
+        try:
+            text_content = page.run_js("return document.body.innerText")
+            if "ad finished" in text_content.lower() or "advertisement finished" in text_content.lower():
+                log.info("检测到广告完成提示文本")
+                return True
+        except Exception:
+            pass
+
         time.sleep(1)
-    
-    log.warning("视频播放超时，继续执行")
+
+    log.warning("视频播放超时，继续执行（可能已完成或站点未返回状态）")
     return True
 
 
@@ -266,6 +290,10 @@ def create_proxy_auth_extension(proxy_url):
         zp.writestr("background.js", background_js)
     return str(plugin_path)
 
+
+# ==========================================================
+# 单账号续期
+# ==========================================================
 
 def run_one(label: str, renew_url: str, cookie_str: str):
     """执行单个账号的续期"""
@@ -345,7 +373,7 @@ def run_one(label: str, renew_url: str, cookie_str: str):
                     break
             except Exception:
                 pass
-        
+
         if not renew_btn:
             try:
                 renew_btn = page.ele('css:button.purple', timeout=5)
@@ -353,7 +381,7 @@ def run_one(label: str, renew_url: str, cookie_str: str):
                     log.info("找到紫色续期按钮")
             except Exception:
                 pass
-        
+
         if not renew_btn:
             try:
                 renew_btn = page.ele('xpath://button[contains(text(), "Renew")]', timeout=5)
@@ -370,17 +398,18 @@ def run_one(label: str, renew_url: str, cookie_str: str):
 
         log.info("点击续期按钮...")
         renew_btn.click()
-        
-        # 关键改动：点击续期按钮后，处理广告视频而不是 reCAPTCHA
+        time.sleep(3)
+
+        # 处理广告视频
         ad_handled = handle_ad_video(page)
-        
+
         if ad_handled:
             log.info("广告视频处理完成，等待续期确认...")
             time.sleep(5)
-            
+
             # 保存状态
             debug_dump(page, "after_ad")
-            
+
             # 刷新页面同步状态
             log.info("刷新页面同步状态...")
             page.get(renew_url)
@@ -415,6 +444,10 @@ def run_one(label: str, renew_url: str, cookie_str: str):
         except Exception:
             pass
 
+
+# ==========================================================
+# 多账号收集 & 主运行
+# ==========================================================
 
 def collect_accounts():
     """收集账号配置"""
