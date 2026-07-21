@@ -129,17 +129,40 @@ def do_rounds(dr,sn,sc):
                 if btn=='clicked_90min':
                     # 点击+90min后等待弹窗出现，然后等Turnstile
                     log("⏳ 等待弹窗和Turnstile...")
+                    # 截图诊断
+                    try:
+                        dr.save_screenshot(os.path.join(os.path.dirname(__file__),"debug_output"),f"after_click_{int(time.time())}.png")
+                    except: pass
                     for _ in range(60):
                         time.sleep(1)
-                        # 检查Turnstile是否通过
-                        if not dr.find_elements('css selector','iframe[src*="challenges.cloudflare.com"]'):
-                            # 检查页面是否已更新（remaining时间变化）
-                            new_time=dr.execute_script("return document.body?document.body.innerText.substring(0,200):'';")
-                            if new_time and ('remaining' in new_time.lower() or 'cap' in new_time.lower()):
-                                log("✅ 弹窗已处理，页面已更新")
-                                break
+                        # 检查Turnstile是否存在
+                        cf=dr.find_elements('css selector','iframe[src*="challenges.cloudflare.com"]')
+                        if cf:
+                            log("🛡️ Turnstile 验证中...")
+                            continue
+                        # 检查是否有广告弹窗（Modal/Dialog）
+                        modal=dr.execute_script("""
+                            var modals=document.querySelectorAll('[role=dialog],[class*=modal],[class*=popup],[class*=overlay]');
+                            return modals.length;""")
+                        if modal>0:
+                            log(f"📺 发现弹窗/模态框 {modal}个")
+                            # 尝试关闭
+                            try:
+                                closes=dr.find_elements('css selector','[aria-label=Close],.modal-close,.close-btn')
+                                for c in closes:
+                                    try: c.click()
+                                    except: pass
+                                log("✅ 已尝试关闭弹窗")
+                            except: pass
+                            continue
+                        # Turnstile通过 + 无弹窗 = 续期完成
+                        log("✅ Turnstile通过，无弹窗")
+                        break
                     else:
                         log("⚠️ 弹窗等待超时")
+                    # 诊断：打印页面HTML前500字符
+                    html=dr.execute_script("return document.documentElement.outerHTML.substring(0,500);")
+                    log(f"📄 页面HTML片段: {html[:300]}")
         except Exception as e: log(f"⚠️ 续期异常: {e}")
         # 等 Turnstile
         try:
