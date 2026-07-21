@@ -84,13 +84,18 @@ def do_rounds(dr,sn,sc):
         # 记录续期前时间戳，用于验证续期是否真的成功
         pre_ts=time.time()
         try:
-            lr=dr.execute_script("""
-                try{var c=Livewire.all;for(var i=0;i<c.length;i++){try{c[i].call('extend');return'success';}catch(e){}}}catch(e){}
-                try{var b=document.querySelector('button.rt-btn-free');if(b){b.click();return'clicked';}}catch(e){}
-                return'fail';""")
-            if lr=='success': log("✅ Livewire 续期成功")
-            elif lr=='clicked': log("✅ 按钮点击成功")
-            else: log("⚠️ 回退点击")
+            # 直接点击 +90min 按钮
+            btn=dr.execute_script("""
+                var buttons=document.querySelectorAll('button,[role=button],[class*="btn"],[class*="Btn"]');
+                for(var i=0;i<buttons.length;i++){
+                    var t=(buttons[i].innerText||buttons[i].textContent||'').trim();
+                    if(t.indexOf('90')!==-1 && t.indexOf('min')!==-1){
+                        buttons[i].click();
+                        return'clicked_90min';
+                    }
+                }
+                return'not_found';""")
+            log(f"✅ 续期操作结果: {btn}")
         except Exception as e: log(f"⚠️ 续期异常: {e}")
         time.sleep(5)
         # 等 Turnstile

@@ -18,7 +18,7 @@ def pars_s(ms):
     if m: return int(m.group(1))*3600
     return 0
 def get_time(dr):
-    """从页面提取服务器剩余时间（秒）和显示字符串"""
+    """从页面提取服务器到期时间（秒）和显示字符串"""
     try:
         # 方法1: 尝试从 Livewire 组件数据中获取
         pt=dr.execute_script("""
@@ -31,6 +31,11 @@ def get_time(dr):
                         if(data && data.expires){result=data.expires;break;}
                         if(data && data.remaining){result=data.remaining;break;}
                         if(data && data.server_time){result=data.server_time;break;}
+                        // 打印所有 data 键名用于诊断
+                        if(!result && i===0){
+                            var keys=Object.keys(data);
+                            window._livewire_keys=keys.join(',');
+                        }
                     }catch(e){}
                 }
             }catch(e){}
@@ -42,17 +47,21 @@ def get_time(dr):
                 log(f"✅ 从 Livewire 数据获取: {pt} ({secs}s)")
                 return(f"{h:02d}:{m:02d}:{s:02d}",secs)
         
-        # 方法2: 从页面文本中提取，优先匹配明确的时间语义
+        # 诊断：打印 Livewire 键名
+        lk=dr.execute_script("return window._livewire_keys||'';")
+        if lk: log(f"🔑 Livewire data keys: {lk}")
+        
+        # 方法2: 从页面文本中提取
         pt=dr.execute_script("return document.body?document.body.innerText.substring(0,3000):'';")
         if not pt: return("(未知",0)
         
-        # 找包含 "expires" 或 "time left" 的行
+        # 找包含 "remaining" 的行（这是服务器到期时间）
         for line in pt.split('\n'):
             ll=line.lower()
-            if any(kw in ll for kw in ['expires','time left','server expires','renewal']):
+            if 'remaining' in ll:
                 lt=re.findall(r'(\d{1,2}:\d{2}:\d{2})',line)
                 if lt:
-                    log(f"✅ 关键字行: {lt[0]} (行: {line.strip()[:100]})")
+                    log(f"✅ remaining 行: {lt[0]} (行: {line.strip()[:100]})")
                     return(lt[0],pars_s(lt[0]))
         
         # 回退: 找第一个 >= 1小时的时间（过滤短倒计时如 00:03:00）
