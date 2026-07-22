@@ -8,6 +8,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from util import *
+from util import _LW_DIAGNOSE_JS, _LW_EXTEND_V3_JS, _LW_V2_JS, _LW_CLICK_JS
 from cfg import *
 from tg import send_tg
 
@@ -184,7 +185,7 @@ def do_rounds(dr, sn, su, max_rounds=10):
             log("⚠️ Livewire 方式均未成功，回退到普通点击")
             btn_result = dr.execute_script("""
                 var result=null;
-                var allEls=Array.from(document.querySelectorAll('button,a,[role="button"],[wire\\:click]'));
+                var allEls=Array.from(document.querySelectorAll('button,a,[role="button"]'));
                 for(var i=0;i<allEls.length;i++){
                     var el=allEls[i];
                     var t=(el.innerText||el.textContent||'').trim();
