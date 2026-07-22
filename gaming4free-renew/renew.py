@@ -1,184 +1,201 @@
-#!/usr/bin/env python3
-"""Gaming4Free Renew Pro v30 - 修复 renderer 卡死 + 优化等待逻辑"""
-import os,sys,time,re,urllib.parse,urllib.request
+# -*- coding: utf-8 -*-
+import os, sys, time, json, traceback
 from datetime import datetime
-try:
-    from seleniumbase import SB
-    from selenium.webdriver.common.by import By
-    from selenium.webdriver.support.ui import WebDriverWait
-    from selenium.webdriver.support import expected_conditions as EC
-except ImportError:
-    print("seleniumbase not installed")
-    sys.exit(1)
-from cfg import *
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from util import *
-from cd import *
+from cfg import *
 from tg import send_tg
 
-def main():
-    log("========== 开始处理服务器账号 (Pro v30) ==========")
-    svrs=[]
-    if RENEW_URL and COOKIE:
-        nm="我的服务器"
-        if "/server/" in RENEW_URL:
-            sl=RENEW_URL.split("/server/")[1].split("/")[0]
-            nm=f"服务器-{sl[:8]}"
-        svrs.append((nm,RENEW_URL,COOKIE))
-    for n,u,c in ACCOUNTS:
-        svrs.append((n,u,c))
-    if not svrs:
-        log("❌ 未配置服务器信息"); sys.exit(1)
-    for sn,su,sc in svrs:
-        ok=False
-        for bt in range(MAX_TRIES):
-            if ok: break
+def log(msg):
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{ts}] {msg}", flush=True)
+
+def get_chromedriver():
+    for p in ["/usr/bin/chromedriver", "/usr/local/bin/chromedriver", "/opt/chrome/chromedriver"]:
+        if os.path.exists(p):
+            return p
+    return "/usr/bin/chromedriver"
+
+def init_browser(headless=True):
+    opts = Options()
+    if headless:
+        opts.add_argument("--headless=new")
+    opts.add_argument("--no-sandbox")
+    opts.add_argument("--disable-dev-shm-usage")
+    opts.add_argument("--disable-gpu")
+    opts.add_argument("--disable-blink-features=AutomationControlled")
+    opts.add_argument("--window-size=1920,1080")
+    opts.add_experimental_option("excludeSwitches", ["enable-automation"])
+    opts.add_experimental_option("useAutomationExtension", False)
+    ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    opts.add_argument(f"--user-agent={ua}")
+    svc = Service(executable_path=get_chromedriver())
+    dr = webdriver.Chrome(service=svc, options=opts)
+    dr.set_page_load_timeout(60)
+    try:
+        dr.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+            "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        })
+    except:
+        pass
+    return dr
+
+def inject_cookie(dr, cookie_str):
+    pairs = [p.strip() for p in cookie_str.split(";")]
+    for p in pairs:
+        if "=" in p:
+            k, v = p.split("=", 1)
             try:
-                log(f"🚀 启动浏览器 (第 {bt+1}/{MAX_TRIES} 次尝试)...")
-                # ===== 关键修复: 添加防崩溃参数 =====
-                with SB(uc=True,headless=False,browser='chrome',
-                        agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                        uc_cdp_events=True) as sb:
-                    # 通过 driver 设置 Chrome 选项来加防崩溃参数
-                    # SeleniumBase UC 模式已内置 --no-sandbox 和 --disable-dev-shm-usage
-                    dr = sb.driver
-                    # ===== 关键修复: 设置合理超时 =====
-                    dr.set_page_load_timeout(15)
-                    dr.set_script_timeout(15)
-                    log(f"🌐 访问页面: {su}")
-                    dr.get(su)
-                    log(f"📄 标题: {dr.title}")
-                    if sc:
-                        log("🍪 注入 Cookie...")
-                        for it in sc.split(";"):
-                            it=it.strip()
-                            if "=" in it:
-                                n,v=it.split("=",1)
-                                try: dr.add_cookie({"name":n.strip(),"value":v.strip(),"domain":".gaming4free.net","path":"/","secure":True})
-                                except: pass
-                        try: dr.refresh(); time.sleep(3)
-                        except Exception as e:
-                            log(f"⚠️ refresh 失败，尝试直接导航: {e}")
-                            try: dr.get(su); time.sleep(5)
-                            except: pass
-                        log("⏳ 等待页面加载...")
-                        # ===== 关键修复: 使用显式等待代替死等 =====
-                        try:
-                            WebDriverWait(dr, 30).until(
-                                EC.presence_of_element_located((By.XPATH, "//button[contains(text(), 'min')]"))
-                            )
-                            log("✅ 页面加载完成，找到续期按钮")
-                        except Exception as e:
-                            log(f"⚠️ 等待按钮超时: {e}")
-                            # 尝试通过标题判断是否登录成功
-                            title=dr.title
-                            if title and "Login" not in title and "login" not in title:
-                                log(f"✅ 页面加载完成: {title}")
-                            else:
-                                log("❌ 登录可能失败")
-                                scr(sb,"err_login")
-                                raise
-                    do_rounds(dr,sb,sn,sc)
-                    bl,bs=get_time(dr)
-                    if bs>=THRESHOLD:
-                        ok=True
-            except Exception as e:
-                log(f"❌ 异常: {e}")
-                try: scr(sb,"err")
-                except: pass
-                # ===== 关键修复: TG 通知截断过长内容 =====
-                try:
-                    err_msg=str(e)[:500]
-                    send_tg(f"❌ 异常: {err_msg}",sn)
-                except: pass
-                break
-            time.sleep(3)
-        if ok:
-            try: send_tg(f"✅ 已达到目标时长 {THRESHOLD//3600}h，停止续期",sn)
-            except: pass
-        else:
-            try: send_tg(f"⚠️ 已达最大轮数 {MAX_ROUNDS}，停止续期",sn)
-            except: pass
+                dr.add_cookie({"name": k.strip(), "value": v.strip(), "domain": ".gaming4free.net", "path": "/"})
+            except:
+                pass
 
-def do_rounds(dr,sb,sn,sc):
-    cr=0
-    while cr<MAX_ROUNDS:
-        cr+=1
-        log(f"\n🔄 --- 第 {cr}/{MAX_ROUNDS} 轮续期 ---")
-        bl,bs=get_time(dr)
-        log(f"⏱️ 当前剩余时长: {bl} ({bs}秒)")
-        if bs>=THRESHOLD:
-            log(f"✅ 已超过目标时长 {THRESHOLD//3600} 小时")
-            try: send_tg(f"🎉 已达到目标时长 {bl}",sn,bl)
-            except: pass
-            return True
-
-        ci=chk_cd(dr)
-        if ci and ci.get('cooldown'):
-            rem=ci.get('remaining',0)
-            log(f"⏳ 检测到按钮冷却，剩余: {ci.get('text','')} (剩 {rem}秒)")
-            for _ in range(rem):
-                time.sleep(1)
-                if (_ % 10)==0:
-                    try: dr.refresh(); time.sleep(2)
-                    except: pass
-            dr.refresh(); time.sleep(5)
-            bl,bs=get_time(dr)
-            log(f"⏱️ 冷却后: {bl} ({bs}秒)")
-
-        pre_ts=time.time()
-        pre_time=bs
-
+def get_time(dr):
+    for attempt in range(3):
         try:
-            # 1. 找到 +90min 按钮
-            btn_result=dr.execute_script("""
+            el = WebDriverWait(dr, 10).until(
+                EC.presence_of_element_located((By.XPATH, "//span[contains(text(),'remaining')]"))
+            )
+            txt = el.text.strip()
+            txt_clean = txt.replace("remaining", "").strip()
+            parts = txt_clean.split(":")
+            if len(parts) >= 3:
+                h, m, s = int(parts[0]), int(parts[1]), int(parts[2])
+                total = h * 3600 + m * 60 + s
+                log(f"✅ remaining 行: {txt_clean} (行: {txt})")
+                return txt_clean, total
+            elif len(parts) == 2:
+                m, s = int(parts[0]), int(parts[1])
+                total = m * 60 + s
+                log(f"✅ remaining 行: {txt_clean} (行: {txt})")
+                return txt_clean, total
+        except Exception as e:
+            if attempt == 2:
+                log(f"⚠️ 获取剩余时间失败: {e}")
+                try:
+                    dr.refresh()
+                    time.sleep(3)
+                except:
+                    pass
+            time.sleep(2)
+    return None, 0
+
+def scr(dr, name):
+    try:
+        os.makedirs("debug_output", exist_ok=True)
+        dr.save_screenshot(f"debug_output/{name}.png")
+    except:
+        pass
+
+def do_rounds(dr, sn, su, max_rounds=10):
+    cr = 0
+    while cr < max_rounds:
+        cr += 1
+        log(f"\n🔄 --- 第 {cr}/{max_rounds} 轮续期 ---")
+
+        bl, bs = get_time(dr)
+        if not bl:
+            log("⚠️ 无法获取剩余时间，刷新重试")
+            dr.refresh()
+            time.sleep(5)
+            continue
+        log(f"⏱️ 当前剩余时长: {bl} ({bs}秒)")
+
+        pre_time = bs
+        pre_ts = time.time()
+
+        # ===== 第一轮：Livewire 诊断 =====
+        if cr == 1:
+            try:
+                diag = dr.execute_script(_LW_DIAGNOSE_JS)
+                log(f"🔧 Livewire 诊断:\n{diag}")
+            except Exception as e:
+                log(f"⚠️ 诊断失败: {e}")
+
+        # ===== 三层点击策略 =====
+        click_result = None
+
+        # Layer 1: Livewire v3 - $wire.extend()
+        try:
+            r1 = dr.execute_script(_LW_EXTEND_V3_JS)
+            log(f"🖱️ Layer1 (Livewire v3): {r1}")
+            if r1 and 'fail' not in r1 and 'error' not in r1:
+                click_result = r1
+        except Exception as e:
+            log(f"⚠️ Layer1 异常: {e}")
+
+        # Layer 2: Livewire v2 - emit('extend')
+        if not click_result:
+            try:
+                r2 = dr.execute_script(_LW_V2_JS)
+                log(f"🖱️ Layer2 (Livewire v2): {r2}")
+                if r2 and 'fail' not in r2 and 'error' not in r2:
+                    click_result = r2
+            except Exception as e:
+                log(f"⚠️ Layer2 异常: {e}")
+
+        # Layer 3: wire:click 鼠标事件派发
+        if not click_result:
+            try:
+                r3 = dr.execute_script(_LW_CLICK_JS)
+                log(f"🖱️ Layer3 (wire:click dispatch): {r3}")
+                if r3 and 'not_found' not in r3 and 'error' not in r3:
+                    click_result = r3
+            except Exception as e:
+                log(f"⚠️ Layer3 异常: {e}")
+
+        # Layer 4: 回退 - 普通点击
+        if not click_result:
+            log("⚠️ Livewire 方式均未成功，回退到普通点击")
+            btn_result = dr.execute_script("""
                 var result=null;
-                var allEls = Array.from(document.querySelectorAll('*'));
+                var allEls=Array.from(document.querySelectorAll('button,a,[role="button"],[wire\\:click]'));
                 for(var i=0;i<allEls.length;i++){
                     var el=allEls[i];
-                    if(el.tagName!=='BUTTON' && el.tagName!=='A' && el.tagName!=='SPAN' && el.tagName!=='DIV') continue;
-                    if(el.getAttribute('role')!=='button' && el.tagName!=='BUTTON' && el.tagName!=='A') continue;
                     var t=(el.innerText||el.textContent||'').trim();
-                    if(t.indexOf('90')!==-1 && t.indexOf('min')!==-1){
+                    if(t.indexOf('90')!==-1&&t.indexOf('min')!==-1){
                         var rect=el.getBoundingClientRect();
-                        result={
-                            tagName:el.tagName,
-                            text:t,
-                            disabled:!!el.disabled,
-                            visible:rect.width>0&&rect.height>0,
-                        };
-                        break;
+                        if(rect.width>0&&rect.height>0&&!el.disabled){
+                            result={text:t.substring(0,30),disabled:el.disabled,visible:true,
+                                    wireClick:el.getAttribute('wire\\:click')||el.getAttribute('wire\\:click\\.prevent')||''};
+                            break;
+                        }
                     }
                 }
                 return result?JSON.stringify(result):'not_found';
             """)
-            
             if btn_result == 'not_found':
                 log("❌ 未找到 +90min 按钮!")
-                scr(sb, f"fail_round{cr}_no_btn")
+                scr(dr, f"fail_round{cr}_no_btn")
                 time.sleep(10)
+                dr.refresh()
+                time.sleep(5)
                 continue
-            
-            import json
-            bi=json.loads(btn_result)
-            log(f"🔍 按钮: {bi.get('text')}, disabled={bi.get('disabled')}, visible={bi.get('visible')}")
+
+            bi = json.loads(btn_result)
+            log(f"🔍 按钮: {bi.get('text')}, disabled={bi.get('disabled')}, visible={bi.get('visible')}, wire:click={bi.get('wireClick')}")
 
             if bi.get('disabled') or not bi.get('visible'):
-                log(f"⚠️ 按钮不可用")
-                scr(sb, f"fail_round{cr}_btn_disabled")
+                log("⚠️ 按钮不可用")
+                scr(dr, f"fail_round{cr}_btn_disabled")
                 time.sleep(10)
+                dr.refresh()
+                time.sleep(5)
                 continue
 
-            # 2. 点击按钮
             click_js = """
-                var allEls = Array.from(document.querySelectorAll('*'));
+                var allEls=Array.from(document.querySelectorAll('button,a,[role="button"]'));
                 for(var i=0;i<allEls.length;i++){
                     var el=allEls[i];
-                    if(el.tagName!=='BUTTON' && el.tagName!=='A' && el.tagName!=='SPAN' && el.tagName!=='DIV') continue;
-                    if(el.getAttribute('role')!=='button' && el.tagName!=='BUTTON' && el.tagName!=='A') continue;
                     var t=(el.innerText||el.textContent||'').trim();
-                    if(t.indexOf('90')!==-1 && t.indexOf('min')!==-1){
+                    if(t.indexOf('90')!==-1&&t.indexOf('min')!==-1){
                         var rect=el.getBoundingClientRect();
-                        if(rect.width>0 && rect.height>0 && !el.disabled){
+                        if(rect.width>0&&rect.height>0&&!el.disabled){
                             el.scrollIntoView({block:'center'});
                             el.click();
                             return 'clicked:'+el.tagName+':'+t.substring(0,30);
@@ -187,53 +204,147 @@ def do_rounds(dr,sb,sn,sc):
                 }
                 return 'not_found';
             """
-            click_result=dr.execute_script(click_js)
-            log(f"🖱️ 点击: {click_result}")
+            click_result = dr.execute_script(click_js)
+            log(f"🖱️ Layer4 (普通点击): {click_result}")
 
-            # 3. 等待续期生效（不再依赖 Turnstile token）
-            log("⏳ 等待续期生效 (最长 180s)...")
-            wait_end=time.time()+180
-            renewed=False
-            while time.time()<wait_end:
-                try:
-                    ct,cs=get_time(dr)
-                    diff=cs-pre_time
-                    if diff > 300:
-                        log(f"✅ 检测到时间增加 ({ct} > {bl}), 增加 {diff}秒")
-                        renewed=True
-                        break
-                except: pass
-                time.sleep(3)
-            
-            if renewed:
+        # ===== 检测确认弹窗 =====
+        time.sleep(1.5)
+        confirm_selectors = [
+            (By.XPATH, "//button[contains(text(), 'Confirm')]"),
+            (By.XPATH, "//button[contains(text(), 'confirm')]"),
+            (By.XPATH, "//button[contains(text(), 'Yes')]"),
+            (By.XPATH, "//button[contains(text(), 'OK')]"),
+            (By.XPATH, "//button[contains(text(), 'Renew')]"),
+            (By.XPATH, "//button[contains(text(), 'Extend')]"),
+            (By.XPATH, "//button[contains(text(), 'Add')]"),
+            (By.CSS_SELECTOR, ".swal2-confirm"),
+            (By.CSS_SELECTOR, ".modal-footer button"),
+            (By.CSS_SELECTOR, "button[class*='confirm']"),
+            (By.CSS_SELECTOR, "button[class*='primary']"),
+        ]
+        for by, sel in confirm_selectors:
+            try:
+                confirm_btn = WebDriverWait(dr, 2).until(
+                    EC.element_to_be_clickable((by, sel))
+                )
+                confirm_btn.click()
+                log(f"✅ 处理确认弹窗: {sel}")
+                break
+            except:
                 continue
 
-        except Exception as e:
-            log(f"❌ 续期异常: {e}")
-            scr(sb, f"fail_round{cr}_exception")
+        # ===== 检测 alert =====
+        try:
+            alert = dr.switch_to.alert
+            log(f"⚠️ 检测到 Alert: {alert.text}")
+            alert.accept()
+        except:
+            pass
 
-        # 最终检查
-        al,as_=get_time(dr)
-        df=int(as_)-int(pre_time)
-        elapsed=time.time()-pre_ts
+        # ===== 等待续期生效 (30s) =====
+        log("⏳ 等待续期生效 (最长 30s)...")
+        wait_end = time.time() + 30
+        renewed = False
+        while time.time() < wait_end:
+            try:
+                ct, cs = get_time(dr)
+                diff = int(cs) - int(pre_time)
+                if diff > 300:
+                    log(f"✅ 检测到时间增加 → {ct}, +{diff}秒")
+                    renewed = True
+                    break
+            except:
+                pass
+            time.sleep(3)
+
+        # ===== 最终判断 =====
+        al, as_ = get_time(dr)
+        df = int(as_) - int(pre_time) if as_ else 0
+        elapsed = time.time() - pre_ts
         log(f"⏱️ 续期后: {al} ({as_}秒), 增加: {df}秒, 耗时: {elapsed:.0f}s")
 
         if df > 300:
             log(f"🎉 续期成功! +{df}s ({bl} → {al})")
-            try: send_tg(f"🎉 Pro续期成功 (+{df//60}分钟)",sn,al)
+            try: send_tg(f"🎉 [{sn}] Pro续期成功 (+{df//60}分钟)", sn, al)
             except: pass
-            log(f"💤 等待5分钟再续下一轮...")
+            log("💤 等待5分钟再续下一轮...")
             time.sleep(300)
-            dr.refresh(); time.sleep(5)
+            dr.refresh()
+            time.sleep(5)
             continue
         else:
-            err_text=dr.execute_script("return document.body?document.body.innerText.substring(0,500):'';")
-            if err_text: log(f"⚠️ 页面内容片段: {err_text[:200]}")
-            scr(sb, f"fail_round{cr}")
+            scr(dr, f"fail_round{cr}")
+            try:
+                err_text = dr.execute_script("return document.body?document.body.innerText.substring(0,500):'';")
+                if err_text:
+                    log(f"⚠️ 页面内容片段: {err_text[:300]}")
+            except:
+                pass
             log(f"❌ 续期失败，继续下一轮")
             time.sleep(10)
+            dr.refresh()
+            time.sleep(5)
+            continue
 
     return False
 
-if __name__=="__main__":
+def main():
+    log("========== 开始处理服务器账号 (Pro v30-fix) ==========")
+
+    cookie = os.environ.get("G4F_COOKIE", "")
+    server_url = os.environ.get("G4F_SERVER_URL", "")
+    server_name = os.environ.get("G4F_SERVER_NAME", "gaming4free")
+
+    if not cookie or not server_url:
+        log("❌ 缺少环境变量 G4F_COOKIE 或 G4F_SERVER_URL")
+        sys.exit(1)
+
+    for attempt in range(3):
+        log(f"🚀 启动浏览器 (第 {attempt + 1}/3 次尝试)...")
+        dr = None
+        try:
+            dr = init_browser(headless=True)
+            log(f"🌐 访问页面: {server_url}")
+            dr.get("https://gaming4free.net/login")
+            time.sleep(3)
+
+            log("🍪 注入 Cookie...")
+            inject_cookie(dr, cookie)
+
+            log("⏳ 等待页面加载...")
+            dr.get(server_url)
+            time.sleep(5)
+
+            try:
+                WebDriverWait(dr, 30).until(
+                    EC.presence_of_element_located((By.XPATH, "//span[contains(text(),'remaining')]"))
+                )
+            except:
+                log("⚠️ 等待按钮超时，尝试继续...")
+
+            title = dr.title
+            log(f"📄 标题: {title}")
+
+            if "Login" in title:
+                log("❌ Cookie 失效，仍在登录页")
+                dr.quit()
+                sys.exit(1)
+
+            result = do_rounds(dr, server_name, server_url, max_rounds=10)
+            dr.quit()
+            return
+
+        except Exception as e:
+            log(f"❌ 异常: {e}")
+            log(traceback.format_exc())
+            if dr:
+                try: scr(dr, f"error_attempt{attempt}")
+                except: pass
+                try: dr.quit()
+                except: pass
+            time.sleep(10)
+
+    log("❌ 3次尝试均失败")
+
+if __name__ == "__main__":
     main()
