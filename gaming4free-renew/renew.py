@@ -28,7 +28,7 @@ from tg import send_tg
 
 # ========== 配置 ==========
 THRESHOLD = 45 * 3600          # 剩余时间低于 45h 才续期
-MAX_SESSION_CAP = 6 * 3600     # 会话上限保护：剩余 > 6h 视为已达上限，跳过续期 (实测 48h cap 但广告仅在快过期时生效)
+MAX_SESSION_CAP = 45 * 3600     # 会话上限保护：剩余 > 45h 视为已达上限，跳过续期 (实测 48h cap 但广告仅在快过期时生效)
 MAX_ZERO_DIFF_ROUNDS = 2       # 连续多少轮增量<=0 判定达上限，结束该账号
 HEADLESS = True                # True=无头，False=有头（调试用）
 PAGE_LOAD_TIMEOUT = 120
