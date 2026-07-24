@@ -27,7 +27,7 @@ jobs:
             libcups2 libdrm2 libxkbcommon0 \
             libxcomposite1 libxrandr2 libgbm1 \
             libpango-1.0-0 libcairo2 fonts-liberation \
-            libasound2 libxss1 libxdamage1 libxfixes3
+            libasound2t64 libxss1 libxdamage1 libxfixes3
       - name: 安装 Python 依赖
         working-directory: gaming4free-renew
         run: |
