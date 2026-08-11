@@ -1237,128 +1237,231 @@ def run_single_server(sb, site_url: str, server_num: str, region: str,
         except Exception as e:
             log.warning(f"JS 直接点击失败: {e}")
 
-    # 关键新增: 点击按钮后, 额外用 JS 直接调用 Alpine 续期方法
-    # 这能绕过按钮 disabled 状态, 直接触发续期
+    # 关键新增: 点击按钮后, 用 3 种方式尝试触发续期
+    # 1. 直接调用 Livewire 组件的 extend() 方法 (绕过 Alpine @click)
+    # 2. 拦截并触发 Alpine 的 watchWebAd (用 dispatchEvent 真事件)
+    # 3. 构造 Livewire HTTP 请求直接调用 extend
     if clicked:
         try:
-            log.info("🔧 尝试用 JS 直接调用 Alpine 续期方法 (绕过按钮状态)...")
-            # 关键发现: 这是 Alpine.js 组件
-            # 按钮 @click: isNativeApp ? watchAd() : (adRewardReady ? watchWebAd() : showExtendCaptcha())
-            # 方法在 Alpine.$data 上, 但需要用 .call() 绑定 this
+            log.info("🔧 尝试用 JS 直接调用 Livewire extend() 方法 (绕过按钮状态)...")
             lw_result = sb.execute_script("""
                 return (function() {
                     try {
                         var results = [];
-                        if (typeof window.Alpine === 'undefined') {
-                            results.push('no_alpine');
+                        if (typeof window.Livewire === 'undefined') {
+                            results.push('no_livewire');
                             return results.join(' | ');
                         }
-                        results.push('alpine_found');
+                        results.push('livewire_found');
 
-                        var btn = document.querySelector('button.rt-btn-free');
-                        if (!btn) {
-                            results.push('no_btn');
-                            return results.join(' | ');
-                        }
-
-                        // 获取 Alpine 数据
-                        var alpineData = null;
+                        // 方法 1: 找到 renewal-timer 组件, 直接调用 extend()
+                        var wireComponents = [];
                         try {
-                            if (window.Alpine && window.Alpine.$data) {
-                                alpineData = window.Alpine.$data(btn);
-                                if (alpineData) results.push('alpine_data_found');
+                            if (window.Livewire.components) {
+                                wireComponents = window.Livewire.components.components || [];
+                                results.push('components_count: ' + wireComponents.length);
                             }
                         } catch(e) {
-                            results.push('Alpine.$data error: ' + e.message);
+                            results.push('components access error: ' + e.message);
                         }
 
-                        // 兜底: 从父元素链找
-                        if (!alpineData) {
-                            var el = btn;
-                            for (var i = 0; i < 10 && el; i++) {
-                                try {
-                                    if (el._x_dataStack && el._x_dataStack[0]) {
-                                        alpineData = el._x_dataStack[0];
-                                        results.push('found_via_x_dataStack depth=' + i);
-                                        break;
+                        // Livewire v3: components 是 Map, 用 forEach 遍历
+                        var extendCalled = false;
+                        try {
+                            if (window.Livewire.components && typeof window.Livewire.components.forEach === 'function') {
+                                window.Livewire.components.forEach(function(component, id) {
+                                    if (extendCalled) return;
+                                    try {
+                                        var name = component.name || '';
+                                        if (name.indexOf('renewal') !== -1 || name.indexOf('timer') !== -1) {
+                                            results.push('found_component: ' + name + ' (id=' + id + ')');
+                                            // 调用 extend
+                                            if (typeof component.call === 'function') {
+                                                results.push('calling component.call(extend)...');
+                                                var r = component.call('extend');
+                                                results.push('extend called: ' + JSON.stringify(r).substring(0, 100));
+                                                extendCalled = true;
+                                            } else if (typeof component.$call === 'function') {
+                                                results.push('calling component.$call(extend)...');
+                                                var r = component.$call('extend');
+                                                results.push('extend called: ' + JSON.stringify(r).substring(0, 100));
+                                                extendCalled = true;
+                                            }
+                                        }
+                                    } catch(e) {
+                                        results.push('component error: ' + e.message);
                                     }
-                                } catch(e) {}
-                                el = el.parentElement;
-                            }
-                        }
-
-                        if (!alpineData) {
-                            results.push('no_alpine_data');
-                            return results.join(' | ');
-                        }
-
-                        // 用 Object.keys 列出属性 (Proxy 对象 for...in 可能不完整)
-                        var allKeys = [];
-                        try {
-                            allKeys = Object.keys(alpineData);
-                        } catch(e) {
-                            results.push('Object.keys error: ' + e.message);
-                        }
-                        results.push('keys: ' + allKeys.join(',').substring(0, 300));
-
-                        // 直接访问已知状态属性 (从 HTML @click 推断)
-                        var knownState = ['adRewardReady', 'isPremium', 'isNativeApp', 'extendDisabled', 'adLoading'];
-                        var stateVals = [];
-                        for (var s = 0; s < knownState.length; s++) {
-                            try {
-                                stateVals.push(knownState[s] + '=' + alpineData[knownState[s]]);
-                            } catch(e) {}
-                        }
-                        results.push('state: ' + stateVals.join(', '));
-
-                        // 列出所有 function 类型的属性
-                        var methods = [];
-                        for (var k = 0; k < allKeys.length; k++) {
-                            try {
-                                if (typeof alpineData[allKeys[k]] === 'function') {
-                                    methods.push(allKeys[k]);
-                                }
-                            } catch(e) {}
-                        }
-                        results.push('methods: ' + methods.join(','));
-
-                        // 关键: 设置 adRewardReady=true, 让 watchWebAd 能走通
-                        try {
-                            if ('adRewardReady' in alpineData) {
-                                results.push('setting adRewardReady=true');
-                                alpineData.adRewardReady = true;
+                                });
                             }
                         } catch(e) {
-                            results.push('set adRewardReady error: ' + e.message);
+                            results.push('forEach error: ' + e.message);
                         }
 
-                        // 尝试调用方法, 用 .call(alpineData) 绑定 this
-                        var methodsToTry = ['watchWebAd', 'watchAd', 'showExtendCaptcha', 'extend', 'renew', 'claimAdReward'];
-                        for (var m = 0; m < methodsToTry.length; m++) {
-                            var methodName = methodsToTry[m];
+                        // 方法 2: 通过 DOM 元素的 wire 属性调用
+                        if (!extendCalled) {
                             try {
-                                if (typeof alpineData[methodName] === 'function') {
-                                    results.push('calling ' + methodName + '...');
-                                    // 用 .call() 绑定 this 为 alpineData
-                                    var r = alpineData[methodName].call(alpineData);
-                                    results.push(methodName + ' called: ' + JSON.stringify(r).substring(0, 100));
-                                    return results.join(' | ');
-                                } else {
-                                    results.push(methodName + ' not a function (type: ' + typeof alpineData[methodName] + ')');
+                                var btn = document.querySelector('button.rt-btn-free');
+                                if (btn) {
+                                    var wireEl = btn.closest('[wire\\:id]') || btn.closest('[x-data]');
+                                    if (wireEl) {
+                                        var wireId = wireEl.getAttribute('wire:id');
+                                        results.push('wire_id: ' + wireId);
+                                        if (wireId && window.Livewire.components) {
+                                            var comp = window.Livewire.components.getComponent(wireId) ||
+                                                       window.Livewire.components.components[wireId];
+                                            if (comp) {
+                                                results.push('found_component_via_wire_id: ' + (comp.name || '?'));
+                                                if (typeof comp.call === 'function') {
+                                                    var r = comp.call('extend');
+                                                    results.push('extend called via wire_id: ' + JSON.stringify(r).substring(0, 100));
+                                                    extendCalled = true;
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             } catch(e) {
-                                results.push(methodName + ' error: ' + e.message);
+                                results.push('wire_id method error: ' + e.message);
                             }
                         }
 
-                        results.push('no_method_worked');
+                        // 方法 3: 直接调用 Livewire.dispatch 触发 extend action
+                        if (!extendCalled) {
+                            try {
+                                results.push('trying Livewire.dispatch...');
+                                window.Livewire.dispatch('extend', {serverId: window.__serverId});
+                                results.push('dispatched extend event');
+                                extendCalled = true;
+                            } catch(e) {
+                                results.push('dispatch error: ' + e.message);
+                            }
+                        }
+
+                        results.push(extendCalled ? 'extend_called' : 'extend_not_called');
                         return results.join(' | ');
                     } catch(e) { return 'error: ' + e.message; }
                 })();
             """)
-            log.info(f"Alpine 调用结果: {lw_result}")
+            log.info(f"Livewire 调用结果: {lw_result}")
         except Exception as e:
-            log.warning(f"JS 调用 Alpine 失败: {e}")
+            log.warning(f"JS 调用 Livewire 失败: {e}")
+
+        # 关键新增: 直接构造 Livewire HTTP 请求调用 extend
+        # 这是最可靠的方案 - 完全绕过前端按钮和 Alpine
+        try:
+            log.info("🔧 尝试直接构造 Livewire HTTP 请求调用 extend...")
+            http_result = sb.execute_script("""
+                return (function() {
+                    try {
+                        var results = [];
+                        // 找到 renewal-timer 组件的 snapshot
+                        var btn = document.querySelector('button.rt-btn-free');
+                        if (!btn) return 'no_btn';
+
+                        // 找到 wire:id 元素
+                        var wireEl = btn.closest('[wire\\:id]');
+                        if (!wireEl) return 'no_wire_element';
+
+                        var wireId = wireEl.getAttribute('wire:id');
+                        var initialSnapshot = wireEl.getAttribute('wire:initial-data');
+                        if (!initialSnapshot) return 'no_snapshot';
+
+                        var snapshot = JSON.parse(initialSnapshot);
+                        var data = snapshot.data || {};
+                        var memo = snapshot.memo || {};
+                        var serverId = data.serverId;
+                        if (!serverId) return 'no_serverId_in_snapshot';
+                        results.push('serverId: ' + serverId);
+
+                        // 找 CSRF token
+                        var csrfToken = null;
+                        var metaTag = document.querySelector('meta[name="csrf-token"]');
+                        if (metaTag) csrfToken = metaTag.content;
+                        if (!csrfToken) {
+                            // Livewire v3 把 token 嵌在 script data attribute 里
+                            var scriptTag = document.querySelector('script[data-csrf]');
+                            if (scriptTag) csrfToken = scriptTag.getAttribute('data-csrf');
+                        }
+                        if (!csrfToken) {
+                            // 从 Livewire 全局对象读
+                            try { csrfToken = window.Livewire.token; } catch(e) {}
+                        }
+                        results.push('csrf: ' + (csrfToken ? csrfToken.substring(0, 20) + '...' : 'NOT_FOUND'));
+                        if (!csrfToken) return results.join(' | ');
+
+                        // 构造 Livewire 请求 (v3 格式)
+                        var requestBody = {
+                            _token: csrfToken,
+                            components: [{
+                                snapshot: initialSnapshot,
+                                updates: {},
+                                calls: [
+                                    { method: 'extend', params: [] }
+                                ]
+                            }]
+                        };
+
+                        // 发送 fetch 请求
+                        var fetchUrl = '/livewire/update';
+                        results.push('fetching: ' + fetchUrl);
+                        return new Promise(function(resolve) {
+                            fetch(fetchUrl, {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                    'X-Livewire': 'true',
+                                    'X-CSRF-TOKEN': csrfToken
+                                },
+                                body: JSON.stringify(requestBody)
+                            }).then(function(resp) {
+                                results.push('status: ' + resp.status);
+                                return resp.text();
+                            }).then(function(text) {
+                                results.push('response_len: ' + text.length);
+                                // 检查响应里是否有 expiresTimestamp 变化
+                                var expiresMatch = text.match(/"expiresTimestamp"\s*:\s*(\d+)/);
+                                if (expiresMatch) {
+                                    results.push('new_expiresTimestamp: ' + expiresMatch[1]);
+                                }
+                                // 检查是否报错
+                                if (text.indexOf('"errors"') !== -1) {
+                                    results.push('has_errors_in_response');
+                                }
+                                resolve(results.join(' | '));
+                            }).catch(function(e) {
+                                results.push('fetch_error: ' + e.message);
+                                resolve(results.join(' | '));
+                            });
+                        });
+                    } catch(e) { return 'error: ' + e.message; }
+                })();
+            """)
+            log.info(f"HTTP 调用结果: {http_result}")
+
+            # 等待 Promise 完成 (execute_script 同步返回 Promise 会被转成 {})
+            human_wait(3, 5)
+
+            # 检查是否成功
+            try:
+                check_extend = sb.execute_script("""
+                    return (function() {
+                        try {
+                            var logs = window.__renew_fetch_log || [];
+                            for (var i = 0; i < logs.length; i++) {
+                                var body = logs[i].body || '';
+                                if (body.indexOf('"method":"extend"') !== -1) {
+                                    return 'extend_request_found_in_log: status=' + logs[i].status;
+                                }
+                            }
+                            return 'no_extend_in_log (fetch_log count=' + logs.length + ')';
+                        } catch(e) { return 'error: ' + e.message; }
+                    })();
+                """)
+                log.info(f"📡 extend 请求检查: {check_extend}")
+            except Exception:
+                pass
+        except Exception as e:
+            log.warning(f"直接构造 HTTP 请求失败: {e}")
 
     if not clicked:
         log.warning("所有方法都未找到续期按钮，尝试 Livewire extend...")
