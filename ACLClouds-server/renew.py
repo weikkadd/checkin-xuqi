@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ACLClouds (dash.aclclouds.com) 自动续期脚本
+ACLClouds (aclclouds.com) 自动续期脚本
 - 通过 Cookie 注入调用 Pelican 风格 API
 - 免费服务到期前 2 天可续期 / Minecraft 免费服务到期前 2 小时可续期
 - 默认阈值 48h, 命中则调用 POST /api/client/servers/{id}/upgrade/renew
@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 import requests
 
 # ==================== 配置 ====================
-BASE_URL = "https://dash.aclclouds.com"
+BASE_URL = "https://aclclouds.com"  # 注意：不是 dash.aclclouds.com
 RENEW_THRESHOLD_HOURS = int(os.environ.get("RENEW_THRESHOLD_HOURS", "48"))
 
 # Cookie: 完整的浏览器 Cookie 字符串，必须包含 XSRF-TOKEN 和 aclclouds_session
@@ -113,13 +113,8 @@ def build_session(cookie_str):
         elif k.startswith("__Secure-"):
             clean_k = k[9:]  # 移除 "__Secure-" (9个字符)
         
-        # 尝试多个域名
-        domains = ["dash.aclclouds.com", ".aclclouds.com", ".dash.aclclouds.com"]
-        for domain in domains:
-            try:
-                s.cookies.set(clean_k, v, domain=domain, path="/")
-            except:
-                pass
+        # 设置 domain 为 aclclouds.com
+        s.cookies.set(clean_k, v, domain="aclclouds.com", path="/")
     
     # 调试: 打印设置的 Cookie
     log(f"🔍 Session 中设置了 {len(s.cookies)} 个 Cookie:")
@@ -131,12 +126,10 @@ def build_session(cookie_str):
 
 def get_xsrf(session):
     """从 cookie 中提取并解码 XSRF-TOKEN"""
-    # 尝试多个域名
-    for domain in ["dash.aclclouds.com", ".aclclouds.com", ".dash.aclclouds.com"]:
-        token = session.cookies.get("XSRF-TOKEN", domain=domain)
-        if token:
-            return urllib.parse.unquote(token)
-    return None
+    token = session.cookies.get("XSRF-TOKEN", domain="aclclouds.com")
+    if not token:
+        return None
+    return urllib.parse.unquote(token)
 
 
 def api_get(session, path):
@@ -235,7 +228,7 @@ def process_account(cookie_str, threshold_hours):
     # 获取服务器列表
     log("\n📋 获取服务器列表...")
     servers = list_servers(session)
-    log(f"📊 共 {len(servers)} 台服务器")
+    log(f"✅ API 获取到 {len(servers)} 台服务器")
     
     results = {
         "servers": [],
@@ -255,7 +248,7 @@ def process_account(cookie_str, threshold_hours):
             continue
         
         name = attrs.get("name") or f"Server-{sid}"
-        log(f"\n🖥️ 处理服务器: {name} ({sid})")
+        log(f"\n🖥️ 处理服务器: {name} (id={sid})")
         
         # 获取到期时间
         expire_key, expire_val = find_expire(attrs)
@@ -272,13 +265,13 @@ def process_account(cookie_str, threshold_hours):
         remaining = (expires_at - datetime.now(timezone.utc)).total_seconds()
         remaining_hours = remaining / 3600
         
-        log(f"📅 到期时间: {expires_at.strftime('%Y-%m-%d %H:%M')} UTC")
+        log(f"📅 到期时间: {expires_at.strftime('%Y-%m-%dT%H:%M:%S+02:00')}")
         log(f"⏰ 剩余时间: {fmt_remaining(remaining)} ({remaining_hours:.1f}h)")
         
         # 检查是否需要续期
         threshold_seconds = threshold_hours * 3600
         if remaining > threshold_seconds:
-            log(f"✅ 无需续期 (剩余 {remaining_hours:.1f}h > {threshold_hours}h)")
+            log(f"✅ 剩余 {remaining_hours:.1f}h >= {threshold_hours}h, 跳过")
             results["skipped"] += 1
             continue
         
