@@ -2,9 +2,20 @@
 
 为 [https://aclclouds.com/dashboard/projects](https://aclclouds.com/dashboard/projects) 上的免费 Minecraft / VPS 服务器自动续期。
 
+## 📋 两种 Workflow 对比
+
+仓库里有 **2 个 ACLClouds 续期 Workflow**，**选一个用即可**：
+
+| Workflow | 脚本 | 原理 | 推荐度 |
+|----------|------|------|--------|
+| **`ACLClouds-浏览器续期`** | `renew_browser.py` | SeleniumBase UC mode 打开真实浏览器，能过 Cloudflare Turnstile | ⭐⭐⭐⭐⭐ 推荐 |
+| `ACLClouds-卡卡续期` | `renew.py` | 纯 HTTP API 调用 | ⭐ 不推荐（过不了 Turnstile） |
+
+> 💡 详细部署步骤见 [../DEPLOY-GUIDE.md](../DEPLOY-GUIDE.md)
+
 ## 两种续期方案
 
-### 方案一: 纯 API (renew.py) - 推荐, 但需 Turnstile
+### 方案一: 纯 API (renew.py) - 不推荐, 过不了 Turnstile
 
 - 直接调用 API: `POST /api/client/servers/{id}/upgrade/renew`
 - 通过 Cookie 注入保持登录态

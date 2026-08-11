@@ -98,9 +98,19 @@
 2. 选择要运行的 workflow
 3. 点击 `Run workflow` → `Run workflow`
 
+### ACLClouds 有两个 Workflow，选一个用即可
+
+| Workflow | 推荐 | 说明 |
+|----------|------|------|
+| **`ACLClouds-浏览器续期`** | ⭐⭐⭐⭐⭐ | 用 SeleniumBase 浏览器，能过 Cloudflare Turnstile |
+| `ACLClouds-卡卡续期` | ⭐ 不推荐 | 纯 API 调用，过不了 Turnstile |
+
+> 💡 详细 ACLClouds 部署步骤见 [`DEPLOY-GUIDE.md`](DEPLOY-GUIDE.md)
+
 ### 定时任务
 
-- **ACLClouds**: 每 6 小时 (UTC 00,06,12,18)
+- **ACLClouds-浏览器续期**: 每 6 小时 (UTC 00,06,12,18)
+- **ACLClouds-卡卡续期**: 每天 UTC 03:00, 15:00
 - **Gaming4Free**: 每 6 小时 (UTC 00,06,12,18)
 
 ---
