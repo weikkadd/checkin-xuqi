@@ -99,11 +99,11 @@
 .
 ├── .github/workflows/
 │   ├── aclclouds-browser.yml    # ACLClouds 浏览器版（推荐）
-│   ├── gaming4free.yml          # Gaming4Free 续期
-│   └── host2play.yml            # Host2Play 续期
+│   ├── aclclouds-kaka.yml       # ACLClouds 纯 API 版（备用）
+│   └── gaming4free.yml          # Gaming4Free 续期
 ├── ACLClouds-server/            # ACLClouds 脚本
 ├── gaming4free-renew/           # Gaming4Free 脚本
-└── host2play-renew/             # Host2Play 脚本
+└── diagnose.py                  # 通用诊断脚本
 ```
 
 ---
