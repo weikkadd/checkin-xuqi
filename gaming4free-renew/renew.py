@@ -1891,7 +1891,21 @@ def process_account(account: dict) -> dict:
         chromium_arg=CHROMIUM_ARGS,
     ) as sb:
         log.info("✅ 浏览器启动成功")
-        sb.set_window_size(1280, 720)
+        # 设置窗口大小 (加超时保护, 防止新 Chrome 版本在 xvfb 下 hang)
+        # 某些 Chrome 版本 set_window_size 会无限等待, 用线程+timeout 兜底
+        import threading
+        def _set_window():
+            try:
+                sb.set_window_size(1280, 720)
+            except Exception as e:
+                log.warning(f"⚠️ set_window_size 异常 (可忽略): {e}")
+        t = threading.Thread(target=_set_window, daemon=True)
+        t.start()
+        t.join(timeout=10)  # 最多等 10 秒
+        if t.is_alive():
+            log.warning("⚠️ set_window_size 超时 10s, 跳过 (Chrome 可能在 xvfb 下 hang)")
+        else:
+            log.info("✅ 窗口大小已设置为 1280x720")
 
         # 注入 Cookie (关键: 必须先 open 站点, 再 add_cookie, 再 reload)
         if cookie:
