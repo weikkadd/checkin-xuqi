@@ -979,6 +979,63 @@ def run_single_server(sb, site_url: str, server_num: str, region: str,
 
             if info.get("disabled"):
                 log.warning("⚠️ 按钮 disabled! 可能需要先完成其他操作 (如 VOTE)")
+                # 关键修复: 按钮 disabled 通常是上一轮续期生效了, 服务器进入冷却
+                # 之前能用的版本会从按钮文字提取冷却时间, 然后当成功返回
+                btn_text = info.get("text", "") or ""
+                # 按钮文字可能是 "03:51 cd" (冷却倒计时格式)
+                import re as _re2
+                cd_match = _re2.search(r'(\d+):(\d+)', btn_text)
+                if cd_match:
+                    cd_min = int(cd_match.group(1))
+                    cd_sec = int(cd_match.group(2))
+                    cooldown_seconds_total = cd_min * 60 + cd_sec
+                    log.info(f"⏳ 按钮显示冷却时间: {cd_min:02d}:{cd_sec:02d} (共 {cooldown_seconds_total}s)")
+                    # 当作成功返回 (上一轮的 extend 已生效, 进入冷却)
+                    screenshot(sb, f"cooldown_{server_num}")
+                    return {
+                        "ok": True, "renewed": True,
+                        "sec_before": sec_before_check, "sec_after": sec_before_check,
+                        "cooldown": cooldown_seconds_total,
+                        "msg": f"续期成功 (冷却 {cooldown_seconds_total}s): {timestamp_before} → {timestamp_before}"
+                    }
+                else:
+                    # 按钮 disabled 但没显示冷却时间, 也尝试提取冷却
+                    # 从 HTML 中的 wire:initial-data 或 cooldownExpiry 提取
+                    try:
+                        cd_extract = sb.execute_script("""
+                            return (function() {
+                                try {
+                                    // 从 renewal-timer 组件的 snapshot 提取 cooldownExpiry
+                                    var renewalEl = document.querySelector('[wire\\\\:id] [wire\\\\:initial-data]') ||
+                                                    document.querySelector('div[x-data*="renewal"]') ||
+                                                    document.querySelector('[class*="renewal"]');
+                                    // 找所有含 cooldownExpiry 的 wire:initial-data
+                                    var allWireData = document.querySelectorAll('[wire\\\\:initial-data]');
+                                    for (var i = 0; i < allWireData.length; i++) {
+                                        var snap = allWireData[i].getAttribute('wire:initial-data');
+                                        if (snap && snap.indexOf('cooldownExpiry') !== -1) {
+                                            var m = snap.match(/"cooldownExpiry"\s*:\s*(\d+)/);
+                                            if (m && parseInt(m[1]) > 0) {
+                                                return parseInt(m[1]);
+                                            }
+                                        }
+                                    }
+                                    return 0;
+                                } catch(e) { return 0; }
+                            })();
+                        """)
+                        if cd_extract and cd_extract > 0:
+                            log.info(f"⏳ 从 Livewire snapshot 提取冷却时间: {cd_extract}s")
+                            screenshot(sb, f"cooldown_{server_num}")
+                            return {
+                                "ok": True, "renewed": True,
+                                "sec_before": sec_before_check, "sec_after": sec_before_check,
+                                "cooldown": cd_extract,
+                                "msg": f"续期成功 (冷却 {cd_extract}s): {timestamp_before} → {timestamp_before}"
+                            }
+                    except Exception:
+                        pass
+                    log.warning("⚠️ 按钮 disabled 但未检测到冷却时间, 继续尝试点击")
             if info.get("opacity") and float(info.get("opacity", 1)) < 0.5:
                 log.warning(f"⚠️ 按钮 opacity={info.get('opacity')} (半透明, 可能禁用)")
             if info.get("cursor") == "not-allowed":
