@@ -277,39 +277,24 @@ def bypass_turnstile(sb) -> bool:
     """
     try:
         # 检测是否有 CF 验证
-        # 改进: 必须同时满足多个条件才算 CF, 避免误判侧边栏导航
-        #   1. 元素是 modal/dialog (position:fixed 或 role=dialog 或 class 含 modal)
-        #   2. 文本包含 "verify" + "human" (两个都要有), 或 CF 特定中文
-        #   3. 元素覆盖大部分屏幕 (width > 200 AND height > 100)
+        # 注意: 不要做太严格的检测, 即使误判侧边栏导航也不要紧
+        # 因为后面会用预设位置点击 CF checkbox (CF Turnstile 在固定位置)
+        # 用户日志证实: 即使误判, 走到阶段 2 后预设位置 2 (192, 360) 能成功点击 CF checkbox
         has_cf = False
         cf_iframe = None
         try:
             cf_check = sb.execute_script("""
                 return (function() {
                     try {
-                        // 优先检测 CF iframe (最可靠的标志)
-                        var cfIframes = document.querySelectorAll('iframe[src*="challenges.cloudflare.com"], iframe[src*="turnstile"]');
-                        if (cfIframes.length > 0) {
-                            return JSON.stringify({found: true, source: 'iframe', width: cfIframes[0].getBoundingClientRect().width, text: 'cf iframe detected'});
-                        }
-                        // 其次检测 modal/dialog (必须有 modal 特征)
-                        var els = document.querySelectorAll('[role=dialog], [class*="modal"], [class*=" Modal"]');
+                        var els = document.querySelectorAll('div, section, [role=dialog]');
                         for (var i = 0; i < els.length; i++) {
                             var rect = els[i].getBoundingClientRect();
-                            // 必须 position:fixed 且覆盖屏幕中部
-                            var style = window.getComputedStyle(els[i]);
-                            if (style.position !== 'fixed') continue;
-                            if (rect.width < 200 || rect.height < 100) continue;
-                            // 必须可见
-                            if (style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity) < 0.1) continue;
+                            if (rect.width < 100 || rect.width > 900) continue;
                             var t = (els[i].innerText || '').toLowerCase();
-                            // CF 特定文本: 必须 "verify"+"human" 同时出现, 或特定中文
                             if ((t.indexOf('verify') !== -1 && t.indexOf('human') !== -1) ||
                                 t.indexOf('正在验证') !== -1 ||
-                                t.indexOf('人机验证') !== -1 ||
-                                t.indexOf('checking your browser') !== -1 ||
-                                t.indexOf('just a moment') !== -1) {
-                                return JSON.stringify({found: true, source: 'modal', width: rect.width, text: t.substring(0, 80)});
+                                t.indexOf('人机验证') !== -1) {
+                                return JSON.stringify({found: true, width: rect.width, text: t.substring(0, 80)});
                             }
                         }
                         return JSON.stringify({found: false});
@@ -320,7 +305,7 @@ def bypass_turnstile(sb) -> bool:
             info = _json.loads(cf_check) if cf_check else {}
             if info.get("found"):
                 has_cf = True
-                log.info(f"🎯 检测到 CF 验证 (来源: {info.get('source', '?')}, 宽 {info.get('width', 0):.0f}px)")
+                log.info(f"🎯 检测到 CF 验证对话框 (宽 {info.get('width', 0):.0f}px)")
                 log.info(f"   文字: {info.get('text', '')[:80]}")
         except Exception as e:
             log.warning(f"CF 检测失败: {e}")
