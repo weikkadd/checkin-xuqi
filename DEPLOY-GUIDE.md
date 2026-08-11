@@ -1,15 +1,14 @@
 # ACLClouds 自动续期部署说明
 
-## 📋 两种 Workflow 对比
+## 📐 方案说明
 
-仓库里有 **2 个 ACLClouds 续期 Workflow**，选一个用即可：
+| Workflow | 脚本 | 原理 | 推荐度 |
+|----------|------|------|--------|
+| **`ACLClouds-浏览器续期`** | `renew_browser.py` | SeleniumBase UC mode 打开真实浏览器，能过 Cloudflare Turnstile | ⭐⭐⭐⭐⭐ |
 
-| Workflow | 脚本 | 原理 | 优点 | 缺点 | 推荐度 |
-|----------|------|------|------|------|--------|
-| **`ACLClouds-浏览器续期`** | `renew_browser.py` | SeleniumBase UC mode 打开真实浏览器 | ✅ 能过 Cloudflare Turnstile 验证 | ⚠️ 需要代理（推荐住宅 IP） | ⭐⭐⭐⭐⭐ |
-| `ACLClouds-卡卡续期` | `renew.py` | 纯 HTTP API 调用 | ✅ 快，不需要浏览器 | ❌ 过不了 Turnstile（API 返回 403 captcha_required） | ⭐ 不推荐 |
+仓库只保留这一个 ACLClouds 续期 workflow。原来还有一个纯 API 版（`ACLClouds-卡卡续期`）已删除，因为它过不了 Cloudflare Turnstile 验证。
 
-**建议**：直接用 `ACLClouds-浏览器续期`。`卡卡续期` 仅在 ACLClouds 未来取消 Turnstile 时才有用。
+> 💡 详细技术文档见 [`ACLClouds-server/README.md`](ACLClouds-server/README.md)
 
 ---
 
@@ -76,26 +75,11 @@ ACLClouds 用 Cloudflare Turnstile 验证，GitHub Actions 的 Azure IP 会被 C
 
 ---
 
-## 🔧 备选：纯 API 版（不推荐）
-
-只有当 ACLClouds 取消 Turnstile 验证时才用这个：
-
-1. 配置 `ACL_COOKIES` Secret（同上）
-2. **不需要** `PROXY_URL`
-3. 进入 Actions → **`ACLClouds-卡卡续期`** → Run workflow
-
-⚠️ 如果运行后日志显示 `403 captcha_required`，说明 ACLClouds 还在用 Turnstile，请换回浏览器版。
-
----
-
 ## 📅 自动触发时间
-
-两个 workflow 默认定时：
 
 | Workflow | 定时（UTC） | 北京时间 |
 |----------|-------------|---------|
 | `ACLClouds-浏览器续期` | 每 6 小时（00, 06, 12, 18 点） | 08:00, 14:00, 20:00, 02:00 |
-| `ACLClouds-卡卡续期` | 每天 UTC 03:00, 15:00 | 11:00, 23:00 |
 
 ---
 
@@ -123,9 +107,9 @@ ACLClouds 限制：到期前 2 天（48 小时）才能续期。脚本默认阈�
 
 把 `RENEW_THRESHOLD_HOURS` 改成 `200`（或更大的值），强制让脚本认为剩余时间不够，触发完整流程。
 
-### Q5: 两个 workflow 都运行了会冲突吗？
+### Q5: 续期成功后多久会再次运行？
 
-不会冲突。两个 workflow 调用的是同一个后端 API，多次续期只会让服务器返回 "已在冷却中"（cooldown），不会扣费或导致问题。但建议**只启用一个**避免浪费 Actions 配额。
+workflow 每 6 小时自动跑一次。但 ACLClouds 续期后会进入 **5 分钟冷却**（cooldown），冷却期内再次续期不会增加时间。所以多次跑只是确认状态，不会扣费。
 
 ---
 
@@ -133,14 +117,12 @@ ACLClouds 限制：到期前 2 天（48 小时）才能续期。脚本默认阈�
 
 ```
 ACLClouds-server/
-├── renew.py              # 纯 API 版（卡卡续期）
-├── renew_browser.py      # 浏览器版（推荐）
+├── renew_browser.py      # 浏览器版续期脚本
 ├── requirements.txt
 └── README.md             # 详细技术文档
 
 .github/workflows/
-├── aclclouds-browser.yml  # 浏览器版 workflow（推荐）
-└── aclclouds-kaka.yml     # 卡卡续期 workflow（不推荐）
+└── aclclouds-browser.yml  # 唯一的 ACLClouds workflow
 ```
 
 ---

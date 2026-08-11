@@ -2,32 +2,19 @@
 
 为 [https://aclclouds.com/dashboard/projects](https://aclclouds.com/dashboard/projects) 上的免费 Minecraft / VPS 服务器自动续期。
 
-## 📋 两种 Workflow 对比
+## 📐 方案说明
 
-仓库里有 **2 个 ACLClouds 续期 Workflow**，**选一个用即可**：
-
-| Workflow | 脚本 | 原理 | 推荐度 |
-|----------|------|------|--------|
-| **`ACLClouds-浏览器续期`** | `renew_browser.py` | SeleniumBase UC mode 打开真实浏览器，能过 Cloudflare Turnstile | ⭐⭐⭐⭐⭐ 推荐 |
-| `ACLClouds-卡卡续期` | `renew.py` | 纯 HTTP API 调用 | ⭐ 不推荐（过不了 Turnstile） |
+| Workflow | 脚本 | 原理 |
+|----------|------|------|
+| **`ACLClouds-浏览器续期`** | `renew_browser.py` | SeleniumBase UC mode 打开真实浏览器，能过 Cloudflare Turnstile |
 
 > 💡 详细部署步骤见 [../DEPLOY-GUIDE.md](../DEPLOY-GUIDE.md)
 
-## 两种续期方案
-
-### 方案一: 纯 API (renew.py) - 不推荐, 过不了 Turnstile
-
-- 直接调用 API: `POST /api/client/servers/{id}/upgrade/renew`
-- 通过 Cookie 注入保持登录态
-- **问题**: 续期 API 需要 Cloudflare Turnstile 验证, 纯 API 无法通过
-- 适合: 续期 API 不需要验证的情况 (或验证已解除)
-
-### 方案二: 浏览器版 (renew_browser.py) - 推荐, 能过 Turnstile
+## 工作原理
 
 - 用 SeleniumBase UC mode 打开浏览器
 - 复用 Gaming4Free 的 CF Turnstile 破解方案 (CDP 点击 checkbox)
 - 先用 API 获取服务器列表 (快), 再用浏览器续期 (能过验证)
-- 适合: 续期 API 需要 Turnstile 验证的情况
 
 ## 部署步骤
 
@@ -46,19 +33,14 @@
 | Secret | 必填 | 说明 |
 | --- | --- | --- |
 | `ACL_COOKIES` | ✅ | 单账号 Cookie 字符串 |
-| `ACL_ACCOUNTS` | 多账号 | 每行 `name|||cookie` |
-| `PROXY_URL` | 浏览器版推荐 | sing-box 节点链接 (hysteria2/tuic/vless) |
+| `ACL_ACCOUNTS` | 多账号 | 每行 `name\|\|\|cookie` |
+| `PROXY_URL` | ✅ | sing-box 节点链接 (hysteria2/tuic/vless) |
 | `TG_BOT_TOKEN` | 通知 | Telegram Bot Token |
 | `TG_CHAT_ID` | 通知 | Chat ID |
 
-### 4. 选择 Workflow
+### 4. 触发 Workflow
 
-| Workflow | 脚本 | 适用 |
-| --- | --- | --- |
-| `ACLClouds-卡卡续期` | `renew.py` | 纯 API, 快, 但过不了 Turnstile |
-| `ACLClouds-浏览器续期` | `renew_browser.py` | 浏览器版, 能过 Turnstile |
-
-进入 `Actions` → 选择对应 workflow → `Run workflow`
+进入仓库的 `Actions` 标签 → 选择 `ACLClouds-浏览器续期` → `Run workflow`
 
 ## 续期规则
 
@@ -68,7 +50,7 @@
 | 免费 Minecraft | 到期前 2 小时 |
 | 付费服务 | 4 天前 |
 
-脚本默认 `< 48h` 就尝试续期, 后端会返回 `renewNotAvailableYet` 跳过。
+脚本默认 `< 48h` 就尝试续期, 后端会返回 `renewNotAvailableYet` 跳过未到期服务器。
 
 ## 浏览器版工作流程
 
@@ -86,15 +68,9 @@
 ## 本地调试
 
 ```bash
-# 纯 API 版
 pip install -r requirements.txt
 export ACL_COOKIES="XSRF-TOKEN=...; aclclouds_session=..."
-python renew.py
-
-# 浏览器版
-pip install -r requirements.txt
-export ACL_COOKIES="XSRF-TOKEN=...; aclclouds_session=..."
-xvfb-run --auto-servernum python renew_browser.py
+xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python renew_browser.py
 ```
 
 ## TG 通知示例
