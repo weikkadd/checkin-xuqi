@@ -12,7 +12,6 @@
 | --- | --- | --- | --- |
 | [ACLClouds](https://dash.aclclouds.com/projects) | [`ACLClouds-server/`](ACLClouds-server/) | Cookie 注入 | 支持 Turnstile 浏览器版 |
 | [Gaming4Free](https://control.gaming4free.net/) | [`gaming4free-renew/`](gaming4free-renew/) | Cookie 注入 | SeleniumBase UC + Turnstile |
-| [Host2Play](https://panel.host2play.net/) | [`host2play-renew/`](host2play-renew/) | Cookie 注入 | SeleniumBase UC + Hysteria2 |
 
 ---
 
@@ -60,23 +59,6 @@
 1. 浏览器登录 https://control.gaming4free.net
 2. 进入服务器控制台页面
 3. F12 → Application → Cookies → 复制全部 Cookie
-
----
-
-#### Host2Play
-
-| Secret | 必填 | 格式示例 |
-| --- | --- | --- |
-| `H2P_COOKIE` | 单账号 | `session=xxx; XSRF-TOKEN=yyy` |
-| `H2P_RENEW_URL` | 单账号 | `https://panel.host2play.net/server/renew?i=xxx` |
-| `H2P_ACCOUNTS` | 多账号 | `名称\|\|\|https://url\|\|\|session=xxx; XSRF-TOKEN=yyy` |
-| `TG_BOT_TOKEN` | 是 | Telegram Bot Token |
-| `TG_CHAT_ID` | 是 | Telegram Chat ID |
-
-**获取 Cookie：**
-1. 浏览器登录 https://panel.host2play.net
-2. F12 → Application → Cookies → https://panel.host2play.net
-3. 复制所有 Cookie
 
 ---
 
