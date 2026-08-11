@@ -1675,14 +1675,19 @@ def run_single_server(sb, site_url: str, server_num: str, region: str,
             if is_extend:
                 extend_request_found = True
             # 关键: 检测响应中是否含 cooldown 信息
+            # 注意: 响应里的 cooldownExpiry 是嵌套 JSON (snapshot 字段是字符串化的 JSON)
+            # 所以实际文本是 \"cooldownExpiry\":300 (转义双引号), 而非 "cooldownExpiry":300
+            # 正则要同时匹配两种形式
             if 'cooldownExpiry' in resp_str:
-                m = _re.search(r'"cooldownExpiry"\s*:\s*(\d+)', resp_str)
+                # 优先匹配转义形式 \"cooldownExpiry\":300
+                m = _re.search(r'\\?"cooldownExpiry\\?"\s*:\s*(\d+)', resp_str)
                 if m:
                     cooldown_seconds = int(m.group(1))
                     if cooldown_seconds > 0:
                         in_cooldown = True
                         log.info(f"   ⏳ 检测到冷却: cooldownExpiry={cooldown_seconds}s")
-                m2 = _re.search(r'"expiresTimestamp"\s*:\s*(\d+)', resp_str)
+                # 同时提取 expiresTimestamp (同样要支持转义)
+                m2 = _re.search(r'\\?"expiresTimestamp\\?"\s*:\s*(\d+)', resp_str)
                 if m2:
                     exp_ts = int(m2.group(1))
                     from datetime import datetime as _dt, timezone as _tz
