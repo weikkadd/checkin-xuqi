@@ -1,0 +1,62 @@
+name: ACLClouds-卡卡续期
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 每天 UTC 03:00, 15:00 (北京时间 11:00, 23:00)
+    - cron: '0 3,15 * * *'
+
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: write
+      contents: read
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          lfs: false
+
+      - name: 配置 Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: 安装系统依赖
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y xvfb xdotool wget
+
+      - name: 安装 Python 依赖
+        working-directory: ACLClouds-server
+        run: |
+          pip install --upgrade pip
+          cat requirements.txt
+          pip install seleniumbase>=4.34.0 requests --no-cache-dir
+          echo "[VERIFY] Checking seleniumbase..."
+          python -c "from seleniumbase import Browser; print('✓ seleniumbase ok')"
+
+      - name: 运行 API 续期脚本
+        env:
+          PYTHONIOENCODING: utf-8
+          ACL_COOKIES: ${{ secrets.ACL_COOKIES }}
+          ACL_ACCOUNTS: ${{ secrets.ACL_ACCOUNTS }}
+          RENEW_THRESHOLD_HOURS: ${{ vars.RENEW_THRESHOLD_HOURS || '48' }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        working-directory: ACLClouds-server
+        run: |
+          echo "=== 准备环境 ==="
+          echo "ACL_COOKIES: ${ACL_COOKIES:+set (masked)}"
+          python renew.py
+
+      - name: 上传日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aclclouds-api-log-${{ github.run_number }}
+          path: ACLClouds-server/renew.log
+          retention-days: 3

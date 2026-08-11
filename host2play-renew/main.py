@@ -14,11 +14,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, TYPE_CHECKING
 from pathlib import Path
 
+# Type checking import only
 if TYPE_CHECKING:
-    from seleniumbase import SeleniumBase  # Only for static type checking
+    from seleniumbase import Browser as SeleniumBase  # For static type hints
 else:
+    # Runtime import - may raise ImportError if not installed
     try:
-        from seleniumbase import ConfigGen, SeleniumBase
+        from seleniumbase import Browser
         has_sb = True
     except ImportError as e:
         has_sb = False
@@ -31,6 +33,7 @@ except ImportError:
     has_requests = False
 
 
+# Configuration
 RENEW_URL = os.getenv("H2P_RENEW_URL", "")
 COOKIE_STR = os.getenv("H2P_COOKIE", "")
 HYP_PROXY = os.getenv("H2P_HYSTERIA2_PROXY", "")
@@ -87,21 +90,13 @@ def create_uc_page(proxy_addr: Optional[str] = None) -> "SeleniumBase":
     if not has_sb:
         raise ImportError("❌ SeleniumBase not installed! Please run: pip install seleniumbase\nCheck that all Chrome dependencies are available in your environment.")
     
-    gen = ConfigGen()
-    gen.uc(True)
-    gen.no_sandbox()
-    gen.disable_dev_shm_usage()
-    gen.disable_gpu()
-    gen.disable_blink_features("AutomationControlled")
-    gen.set_user_agent(
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+    # Use Browser class from seleniumbase
+    page = Browser(
+        uc=True,
+        headless=True,
+        proxy=proxy_addr,
+        timeout=180
     )
-    
-    if proxy_addr:
-        gen.proxy(proxy_addr)
-    
-    page = SeleniumBase(base_config=gen)
-    page.set_default_timeout(180)
     return page
 
 
@@ -112,7 +107,7 @@ def handle_ad_video(page: "SeleniumBase") -> bool:
     for _ in range(30):
         try:
             skip_btn = page.find_element(
-                "css:button:contains(\"Skip\"), xpath://button[contains(text(),\"Skip\")]",
+                "css:button:contains('Skip'), xpath://button[contains(text(),'Skip')]",
                 timeout=2
             )
             print("Found skip button!")
@@ -169,7 +164,7 @@ def get_expire_info(page: "SeleniumBase", renew_url: str = None) -> tuple:
     
     for _ in range(5):
         try:
-            page.driver.get(url)
+            page.get(url)
             return sid, exp_txt, secs
         except Exception as e:
             print(f"Failed to fetch page info: {e}")
@@ -207,6 +202,11 @@ def renew_server(server_name: str, cookie_str: str, renew_url: str = None) -> di
         result["error"] = None
     except Exception as e:
         result["error"] = str(e)
+    finally:
+        try:
+            page.quit()
+        except:
+            pass
     
     return result
 
@@ -296,11 +296,11 @@ def main() -> None:
                     },
                     timeout=10,
                 )
-                print("✓Telegram notification sent")
+                print("✓ Telegram notification sent")
             except Exception as e:
                 print(f"⚠️ Telegram send failed: {e}")
         
-        print(f"\n✓Renewal summary: {summary['success']}/{summary['total']} successful")
+        print(f"\n✓ Renewal summary: {summary['success']}/{summary['total']} successful")
         sys.exit(0)
     
     print("\n🔄 Single-server mode using H2P_RENEW_URL + H2P_COOKIE")
@@ -315,14 +315,14 @@ def main() -> None:
     result = renew_server("main-server", COOKIE_STR, RENEW_URL)
     
     if result["success"]:
-        print("✓Renewal completed")
+        print("✓ Renewal completed")
     else:
-        print(f"✗Renewal failed: {result['error']}")
+        print(f"✗ Renewal failed: {result['error']}")
     
     if result["success"]:
-        msg = f"✓main-server renewed successfully!"
+        msg = "✓ main-server renewed successfully!"
     else:
-        msg = f"✗main-server renewal failed: {result['error']}"
+        msg = f"✗ main-server renewal failed: {result['error']}"
     tg_send(msg, "Host2Play Renewal")
 
 
