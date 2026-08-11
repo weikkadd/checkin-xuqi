@@ -1010,23 +1010,35 @@ def run_single_server(sb, site_url: str, server_num: str, region: str,
     except Exception as e:
         log.warning(f"设置 adRewardReady 失败: {e}")
 
+    found_sel = None
     for sel in vote_btn_selectors:
         try:
-            # 关键: 用 is_element_present 而非 is_element_visible
-            # 因为按钮可能存在但不可见 (在折叠区域)
             if sb.is_element_present(sel):
-                log.info(f"🖱️ 找到续期按钮 [{sel}], 正在点击...")
-                # 先滚动到按钮位置
+                found_sel = sel
+                log.info("found btn [%s], setting state and clicking...", sel)
                 try:
                     sb.scroll_to(sel)
                     human_wait(0.5, 1.0)
                 except Exception:
                     pass
-                # 尝试用 sb.click, 失败则用 JS click
+                _ar = sb.execute_script("""
+                    try {
+                        var s = arguments[0];
+                        var btn = document.querySelector(s);
+                        if (!btn) return 'no_btn';
+                        if (typeof window.Alpine === 'undefined' || !window.Alpine.$data) return 'no_alpine';
+                        var data = window.Alpine.$data(btn);
+                        if (!data) return 'no_data';
+                        var before = data.adRewardReady;
+                        data.adRewardReady = true;
+                        return 'before=' + before + ' after=' + data.adRewardReady;
+                    } catch(e) { return 'error: ' + e.message; }
+                """, sel)
+                log.info("adRewardReady set: %s", _ar)
                 try:
                     sb.click(sel, timeout=5)
                 except Exception as click_e:
-                    log.warning(f"sb.click 失败 ({click_e}), 尝试 JS click")
+                    log.warning("sb.click failed (%s), trying JS click", click_e)
                     sb.execute_script(
                         "var el = document.querySelector(arguments[0]); "
                         "if (el) { el.scrollIntoView({block: 'center'}); el.click(); }",
