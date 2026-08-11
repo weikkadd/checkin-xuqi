@@ -132,10 +132,25 @@ def fmt_remaining(seconds):
 # Cookie 注入
 # ---------------------------------------------------------------------------
 def inject_cookies(sb, cookie_str: str):
-    """先打开站点, 清除匿名 cookie, 注入用户 cookie, 重新访问页面"""
+    """先打开站点, 清除匿名 cookie, 注入用户 cookie, 重新访问页面
+
+    注意: sb 在 Driver() 模式下就是 webdriver (Chrome) 本身, 没有 sb.driver
+         在 SB() 模式下 sb 是 BaseCase, 真正的 driver 是 sb.driver
+         这里自动检测两种模式
+    """
     if not cookie_str:
         log.warning("Cookie 为空")
         return False
+
+    # 自动检测: SB() 模式还是 Driver() 模式
+    # SB() 返回 BaseCase, 有 .driver 属性
+    # Driver() 返回 Chrome webdriver 本身, 没有 .driver 属性
+    if hasattr(sb, 'driver') and sb.driver is not None:
+        driver = sb.driver
+        is_sb_mode = True
+    else:
+        driver = sb  # Driver() 模式下 sb 就是 driver
+        is_sb_mode = False
 
     # 解析 cookie, 自动改名 aclclouds_session → __Host-aclclouds_session
     parsed = {}
@@ -154,17 +169,24 @@ def inject_cookies(sb, cookie_str: str):
 
     # 1. 先打开站点 (获取页面上下文)
     try:
-        sb.open(BASE_URL)
-        sb.sleep(2)
+        if is_sb_mode:
+            sb.open(BASE_URL)
+            sb.sleep(2)
+        else:
+            # Driver() 模式: 直接用 webdriver API
+            driver.get(BASE_URL)
+            import time as _time
+            _time.sleep(2)
     except Exception as e:
         log.warning(f"打开站点失败: {e}")
         return False
 
     # 2. 清除服务器返回的匿名 cookie (避免冲突)
     try:
-        sb.driver.delete_all_cookies()
+        driver.delete_all_cookies()
         log.info("🧹 已清除所有匿名 cookie")
-        sb.sleep(1)
+        import time as _time
+        _time.sleep(1)
     except Exception as e:
         log.warning(f"清除 cookie 失败: {e}")
 
@@ -175,7 +197,7 @@ def inject_cookies(sb, cookie_str: str):
         try:
             if k.startswith("__Host-"):
                 # __Host- cookie: 只能用 CDP 设置, 不能设 domain, 必须 path=/, secure
-                sb.driver.execute_cdp_cmd("Network.setCookie", {
+                driver.execute_cdp_cmd("Network.setCookie", {
                     "name": k,
                     "value": v,
                     "url": BASE_URL,
@@ -187,23 +209,32 @@ def inject_cookies(sb, cookie_str: str):
                 log.info(f"   ✓ {k} (CDP, __Host- 前缀)")
                 n_ok += 1
             else:
-                # 普通 cookie: 用 set_cookie
-                sb.set_cookie(k, v, domain="aclclouds.com")
+                # 普通 cookie: 用 add_cookie (webdriver 标准 API)
+                driver.add_cookie({
+                    "name": k, "value": v,
+                    "domain": ".aclclouds.com", "path": "/",
+                    "secure": True, "httpOnly": False,
+                })
                 log.info(f"   ✓ {k}")
                 n_ok += 1
         except Exception as e1:
+            # 兜底: 尝试用 CDP 设置普通 cookie
             try:
-                sb.driver.add_cookie({
-                    "name": k, "value": v,
-                    "domain": ".aclclouds.com", "path": "/",
-                    "secure": True, "httpOnly": True,
+                driver.execute_cdp_cmd("Network.setCookie", {
+                    "name": k,
+                    "value": v,
+                    "url": BASE_URL,
+                    "path": "/",
+                    "secure": True,
+                    "httpOnly": False,
+                    "sameSite": "Lax",
                 })
-                log.info(f"   ✓ {k} (add_cookie 兜底)")
+                log.info(f"   ✓ {k} (CDP 兜底)")
                 n_ok += 1
             except Exception as e2:
                 n_fail += 1
                 failed_cookies.append(k)
-                log.warning(f"   ✗ {k} 失败: set_cookie={e1}, add_cookie={e2}")
+                log.warning(f"   ✗ {k} 失败: add_cookie={e1}, CDP={e2}")
 
     log.info(f"Cookie 注入完成: ✓ {n_ok} 个, ❌ {n_fail} 个")
     if failed_cookies:
@@ -211,7 +242,7 @@ def inject_cookies(sb, cookie_str: str):
 
     # 4. 验证 cookie
     try:
-        actual_cookies = sb.driver.get_cookies()
+        actual_cookies = driver.get_cookies()
         actual_names = [c.get("name") for c in actual_cookies]
         log.info(f"📋 浏览器实际 Cookie: {actual_names}")
         has_session = any("aclclouds_session" in n for n in actual_names)
@@ -226,8 +257,13 @@ def inject_cookies(sb, cookie_str: str):
     # 5. 重新访问 dashboard (用新 cookie 发请求)
     try:
         log.info(f"🔄 用新 cookie 重新访问 {BASE_URL}/dashboard")
-        sb.open(f"{BASE_URL}/dashboard")
-        sb.sleep(3)
+        if is_sb_mode:
+            sb.open(f"{BASE_URL}/dashboard")
+            sb.sleep(3)
+        else:
+            driver.get(f"{BASE_URL}/dashboard")
+            import time as _time
+            _time.sleep(3)
     except Exception as e:
         log.warning(f"重新访问失败: {e}")
 
