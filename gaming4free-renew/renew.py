@@ -1114,8 +1114,8 @@ def run_single_server(sb, site_url: str, server_num: str, region: str,
                         window.__renew_fetch_log.push({
                             method: method, url: url,
                             status: resp.status,
-                            body: bodyStr.substring(0, 500),
-                            response: t.substring(0, 300)
+                            body: bodyStr.substring(0, 1500),
+                            response: t.substring(0, 3000)
                         });
                     });
                     return resp;
@@ -1670,8 +1670,8 @@ def run_single_server(sb, site_url: str, server_num: str, region: str,
             if 'livewire' in url or is_extend:
                 log.info(f"   FETCH {f.get('method')} {url} → {f.get('status')}{marker}")
                 if body_str:
-                    log.info(f"      请求 body (完整): {body_str[:500]}")
-                log.info(f"      响应: {resp_str[:300]}")
+                    log.info(f"      请求 body (完整): {body_str[:1500]}")
+                log.info(f"      响应: {resp_str[:2000]}")
             if is_extend:
                 extend_request_found = True
             # 关键: 检测响应中是否含 cooldown 信息
