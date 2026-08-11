@@ -258,16 +258,19 @@ def process_account(acc: dict) -> dict:
         CHROMIUM_ARGS += f",--proxy-server={PROXY_URL}"
 
     try:
+        # 注意: Driver() 不支持 SB() 的 test/xvfb 参数
+        # - test=True 是 SB() 专有 (用于 test framework)
+        # - xvfb=True 是 SB() 专有 (会自动启动 Xvfb)
+        # Driver() 在 xvfb-run 环境下直接 headed=True 即可
+        # window_size 直接传给 Driver, 避免后续 sb.set_window_size() 卡住
         with Driver(
             browser="chrome",
             uc=True,
-            test=True,
             headed=True,
             headless=False,
-            xvfb=True,
             chromium_arg=CHROMIUM_ARGS,
+            window_size="1280,720",
         ) as sb:
-            sb.set_window_size(1280, 720)
 
             # 注入 Cookie
             log.info("🍪 注入 Cookie...")
