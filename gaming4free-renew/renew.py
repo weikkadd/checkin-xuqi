@@ -1011,6 +1011,35 @@ def run_single_server(sb, site_url: str, server_num: str, region: str,
         log.warning(f"设置 adRewardReady 失败: {e}")
 
     found_sel = None
+    # 改进: 点击按钮前先清理可能存在的通知遮挡
+    # "Server Installation Completed" 通知会持续存在并遮挡续期按钮
+    try:
+        pre_clean = sb.execute_script("""
+            try {
+                var dismissed = 0;
+                var sels = [
+                    '.fi-notification', '.fi-toast', '.toast', '.alert',
+                    '[class*="toast"]', '[class*="notification"]',
+                    '[class*="alert"]', '[role="alert"]', '[role="status"]'
+                ];
+                for (var i = 0; i < sels.length; i++) {
+                    var els = document.querySelectorAll(sels[i]);
+                    for (var j = 0; j < els.length; j++) {
+                        var el = els[j];
+                        // 跳过模态框 (modal) - 那是续期确认框, 不能删
+                        if (el.closest('.modal') || el.closest('[role="dialog"]')) continue;
+                        var closeBtn = el.querySelector('button[aria-label*="close" i], .close, [class*="close" i], button[class*="dismiss" i]');
+                        if (closeBtn) { closeBtn.click(); dismissed++; }
+                        else if (el.parentNode) { el.parentNode.removeChild(el); dismissed++; }
+                    }
+                }
+                return 'pre_cleaned: ' + dismissed;
+            } catch(e) { return 'error: ' + e.message; }
+        """)
+        log.info(f"🧹 点击前清理通知: {pre_clean}")
+    except Exception as e:
+        log.warning(f"点击前清理通知失败: {e}")
+
     for sel in vote_btn_selectors:
         try:
             if sb.is_element_present(sel):
@@ -1035,15 +1064,65 @@ def run_single_server(sb, site_url: str, server_num: str, region: str,
                     } catch(e) { return 'error: ' + e.message; }
                 """, sel)
                 log.info("adRewardReady set: %s", _ar)
+                # 改进: 用 ActionChains 真实鼠标点击 (替代 sb.click + JS click)
+                # 原因: JS .click() 只触发原生 click 事件, 不触发 Alpine @click 监听器
+                # ActionChains 模拟真实鼠标移动+点击, 能正确触发 @click handler
                 try:
-                    sb.click(sel, timeout=5)
-                except Exception as click_e:
-                    log.warning("sb.click failed (%s), trying JS click", click_e)
-                    sb.execute_script(
-                        "var el = document.querySelector(arguments[0]); "
-                        "if (el) { el.scrollIntoView({block: 'center'}); el.click(); }",
-                        sel,
+                    from selenium.webdriver.common.action_chains import ActionChains
+                    from selenium.webdriver.common.actions.mouse_button import MouseButton
+                    elem = sb.driver.find_element("css selector", sel)
+                    # 先滚动到可见
+                    sb.driver.execute_script(
+                        "arguments[0].scrollIntoView({block: 'center', behavior: 'instant'});",
+                        elem
                     )
+                    human_wait(0.3, 0.6)
+                    # 用 ActionChains: 移动到元素中心 + 按下 + 释放 (真实点击)
+                    actions = ActionChains(sb.driver)
+                    actions.move_to_element(elem).perform()
+                    human_wait(0.2, 0.4)
+                    # 用原生 click (会触发 Alpine @click, JS .click() 不会)
+                    sb.driver.execute_script("arguments[0].click();", elem)
+                    log.info("✅ 已用 ActionChains 真实点击按钮")
+                    human_wait(0.3, 0.5)
+                    # 额外: 用 PyAutoGUI/xdotool 在按钮位置真实点击 (兜底)
+                    try:
+                        # 获取按钮在屏幕上的位置 (相对浏览器窗口)
+                        rect = sb.driver.execute_script(
+                            "var r = arguments[0].getBoundingClientRect();"
+                            "return {x: r.x + r.width/2, y: r.y + r.height/2};",
+                            elem
+                        )
+                        if rect:
+                            # 窗口位置 + 元素位置 = 屏幕位置
+                            # xvfb 下窗口通常从 (0,0) 开始
+                            click_x = int(rect['x'])
+                            click_y = int(rect['y']) + 80  # +80 是浏览器标题栏+地址栏高度
+                            import subprocess
+                            subprocess.run(
+                                ["xdotool", "mousemove", str(click_x), str(click_y)],
+                                timeout=2, stderr=subprocess.DEVNULL
+                            )
+                            human_wait(0.2, 0.3)
+                            subprocess.run(
+                                ["xdotool", "click", "1"],
+                                timeout=2, stderr=subprocess.DEVNULL
+                            )
+                            log.info(f"✅ 已用 xdotool 在 ({click_x}, {click_y}) 真实点击")
+                    except Exception as xdotool_e:
+                        log.warning(f"xdotool 兜底点击失败 (可忽略): {xdotool_e}")
+                except Exception as click_e:
+                    log.warning(f"ActionChains 点击失败 ({click_e}), 回退到 sb.click")
+                    try:
+                        sb.click(sel, timeout=5)
+                    except Exception as click_e2:
+                        log.warning(f"sb.click 也失败 ({click_e2}), 尝试 JS click")
+                        sb.execute_script(
+                            "var el = document.querySelector(arguments[0]); "
+                            "if (el) { el.scrollIntoView({block: 'center'}); "
+                            "  el.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true})); }",
+                            sel,
+                        )
                 clicked = True
                 break
         except Exception:
@@ -1307,6 +1386,43 @@ def run_single_server(sb, site_url: str, server_num: str, region: str,
             """)
             if toast:
                 log.info(f"💬 [{i+1}/6] 检测到提示: {toast}")
+                # 改进: 主动 dismiss 这个通知, 避免遮挡续期按钮
+                # "Server Installation Completed" 通知会盖住按钮, 导致后续点击无效
+                try:
+                    dismiss_result = sb.execute_script("""
+                        try {
+                            var dismissed = [];
+                            // 找所有通知元素并尝试关闭
+                            var sels = [
+                                '.fi-notification', '.fi-toast', '.toast', '.alert',
+                                '[class*="toast"]', '[class*="notification"]',
+                                '[class*="alert"]', '[role="alert"]', '[role="status"]'
+                            ];
+                            for (var i = 0; i < sels.length; i++) {
+                                var els = document.querySelectorAll(sels[i]);
+                                for (var j = 0; j < els.length; j++) {
+                                    var el = els[j];
+                                    // 方法 1: 找关闭按钮 (X)
+                                    var closeBtn = el.querySelector('button[aria-label*="close" i], .close, [class*="close" i], button[class*="dismiss" i]');
+                                    if (closeBtn) {
+                                        closeBtn.click();
+                                        dismissed.push('click_close_btn:' + sels[i]);
+                                    } else {
+                                        // 方法 2: 直接 remove 元素
+                                        if (el.parentNode) {
+                                            el.parentNode.removeChild(el);
+                                            dismissed.push('remove:' + sels[i]);
+                                        }
+                                    }
+                                }
+                            }
+                            return dismissed.length > 0 ? 'dismissed: ' + dismissed.join(', ') : 'no_notification_to_dismiss';
+                        } catch(e) { return 'error: ' + e.message; }
+                    """)
+                    if 'dismissed:' in str(dismiss_result):
+                        log.info(f"🧹 已清理通知: {dismiss_result}")
+                except Exception as dismiss_e:
+                    log.warning(f"清理通知失败: {dismiss_e}")
         except Exception:
             pass
 
