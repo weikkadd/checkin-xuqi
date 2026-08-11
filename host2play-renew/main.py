@@ -16,11 +16,11 @@ from pathlib import Path
 
 # Type checking import only
 if TYPE_CHECKING:
-    from seleniumbase import Browser as SeleniumBase  # For static type hints
+    from seleniumbase import Driver as SeleniumBase  # For static type hints
 else:
     # Runtime import - may raise ImportError if not installed
     try:
-        from seleniumbase import Browser
+        from seleniumbase import Driver
         has_sb = True
     except ImportError as e:
         has_sb = False
@@ -90,8 +90,8 @@ def create_uc_page(proxy_addr: Optional[str] = None) -> "SeleniumBase":
     if not has_sb:
         raise ImportError("❌ SeleniumBase not installed! Please run: pip install seleniumbase\nCheck that all Chrome dependencies are available in your environment.")
     
-    # Use Browser class from seleniumbase
-    page = Browser(
+    # Use Driver class from seleniumbase
+    page = Driver(
         uc=True,
         headless=True,
         proxy=proxy_addr,

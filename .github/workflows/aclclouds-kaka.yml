@@ -37,7 +37,7 @@ jobs:
           cat requirements.txt
           pip install seleniumbase>=4.34.0 requests --no-cache-dir
           echo "[VERIFY] Checking seleniumbase..."
-          python -c "from seleniumbase import Browser; print('✓ seleniumbase ok')"
+          python -c "from seleniumbase import Driver; print('✓ seleniumbase ok')"
 
       - name: 运行 API 续期脚本
         env:

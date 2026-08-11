@@ -246,7 +246,7 @@ def process_account(acc: dict) -> dict:
     log.info(f"{'='*60}")
 
     # 导入 seleniumbase
-    from seleniumbase import Browser
+    from seleniumbase import Driver
 
     CHROMIUM_ARGS = (
         f"--no-sandbox,--disable-dev-shm-usage,--disable-gpu,"
@@ -258,7 +258,7 @@ def process_account(acc: dict) -> dict:
         CHROMIUM_ARGS += f",--proxy-server={PROXY_URL}"
 
     try:
-        with Browser(
+        with Driver(
             browser="chrome",
             uc=True,
             test=True,
