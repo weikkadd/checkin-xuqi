@@ -277,21 +277,39 @@ def bypass_turnstile(sb) -> bool:
     """
     try:
         # 检测是否有 CF 验证
+        # 改进: 必须同时满足多个条件才算 CF, 避免误判侧边栏导航
+        #   1. 元素是 modal/dialog (position:fixed 或 role=dialog 或 class 含 modal)
+        #   2. 文本包含 "verify" + "human" (两个都要有), 或 CF 特定中文
+        #   3. 元素覆盖大部分屏幕 (width > 200 AND height > 100)
         has_cf = False
         cf_iframe = None
         try:
             cf_check = sb.execute_script("""
                 return (function() {
                     try {
-                        var els = document.querySelectorAll('div, section, [role=dialog]');
+                        // 优先检测 CF iframe (最可靠的标志)
+                        var cfIframes = document.querySelectorAll('iframe[src*="challenges.cloudflare.com"], iframe[src*="turnstile"]');
+                        if (cfIframes.length > 0) {
+                            return JSON.stringify({found: true, source: 'iframe', width: cfIframes[0].getBoundingClientRect().width, text: 'cf iframe detected'});
+                        }
+                        // 其次检测 modal/dialog (必须有 modal 特征)
+                        var els = document.querySelectorAll('[role=dialog], [class*="modal"], [class*=" Modal"]');
                         for (var i = 0; i < els.length; i++) {
                             var rect = els[i].getBoundingClientRect();
-                            if (rect.width < 100 || rect.width > 900) continue;
+                            // 必须 position:fixed 且覆盖屏幕中部
+                            var style = window.getComputedStyle(els[i]);
+                            if (style.position !== 'fixed') continue;
+                            if (rect.width < 200 || rect.height < 100) continue;
+                            // 必须可见
+                            if (style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity) < 0.1) continue;
                             var t = (els[i].innerText || '').toLowerCase();
+                            // CF 特定文本: 必须 "verify"+"human" 同时出现, 或特定中文
                             if ((t.indexOf('verify') !== -1 && t.indexOf('human') !== -1) ||
                                 t.indexOf('正在验证') !== -1 ||
-                                t.indexOf('人机验证') !== -1) {
-                                return JSON.stringify({found: true, width: rect.width, text: t.substring(0, 80)});
+                                t.indexOf('人机验证') !== -1 ||
+                                t.indexOf('checking your browser') !== -1 ||
+                                t.indexOf('just a moment') !== -1) {
+                                return JSON.stringify({found: true, source: 'modal', width: rect.width, text: t.substring(0, 80)});
                             }
                         }
                         return JSON.stringify({found: false});
@@ -302,7 +320,7 @@ def bypass_turnstile(sb) -> bool:
             info = _json.loads(cf_check) if cf_check else {}
             if info.get("found"):
                 has_cf = True
-                log.info(f"🎯 检测到 CF 验证对话框 (宽 {info.get('width', 0):.0f}px)")
+                log.info(f"🎯 检测到 CF 验证 (来源: {info.get('source', '?')}, 宽 {info.get('width', 0):.0f}px)")
                 log.info(f"   文字: {info.get('text', '')[:80]}")
         except Exception as e:
             log.warning(f"CF 检测失败: {e}")
@@ -1010,6 +1028,62 @@ def run_single_server(sb, site_url: str, server_num: str, region: str,
     except Exception as e:
         log.warning(f"设置 adRewardReady 失败: {e}")
 
+    # 关键修复: 把网络监听器注入挪到点击按钮之前
+    # 原来在 bypass_turnstile 之后注入, 会错过点击后 80 秒内的所有请求 (包括 extend)
+    try:
+        sb.execute_script("""
+            window.__renew_xhr_log = [];
+            window.__renew_fetch_log = [];
+            // 拦截 XHR
+            var origOpen = XMLHttpRequest.prototype.open;
+            var origSend = XMLHttpRequest.prototype.send;
+            XMLHttpRequest.prototype.open = function(method, url) {
+                this.__method = method;
+                this.__url = url;
+                return origOpen.apply(this, arguments);
+            };
+            XMLHttpRequest.prototype.send = function(body) {
+                var self = this;
+                var bodyStr = '';
+                try { bodyStr = typeof body === 'string' ? body : JSON.stringify(body); } catch(e) {}
+                this.addEventListener('load', function() {
+                    window.__renew_xhr_log.push({
+                        method: self.__method, url: self.__url,
+                        status: self.status,
+                        body: bodyStr.substring(0, 500),
+                        response: (self.responseText || '').substring(0, 300)
+                    });
+                });
+                return origSend.apply(this, arguments);
+            };
+            // 拦截 fetch (记录 body)
+            var origFetch = window.fetch;
+            window.fetch = function(input, init) {
+                var url = typeof input === 'string' ? input : input.url;
+                var method = (init && init.method) || 'GET';
+                var bodyStr = '';
+                try {
+                    if (init && init.body) {
+                        bodyStr = typeof init.body === 'string' ? init.body : JSON.stringify(init.body);
+                    }
+                } catch(e) {}
+                return origFetch.apply(this, arguments).then(function(resp) {
+                    resp.clone().text().then(function(t) {
+                        window.__renew_fetch_log.push({
+                            method: method, url: url,
+                            status: resp.status,
+                            body: bodyStr.substring(0, 500),
+                            response: t.substring(0, 300)
+                        });
+                    });
+                    return resp;
+                });
+            };
+        """)
+        log.info("📡 网络请求监听器已注入 (在点击按钮之前)")
+    except Exception as e:
+        log.warning(f"注入网络监听器失败: {e}")
+
     found_sel = None
     # 改进: 点击按钮前先清理可能存在的通知遮挡
     # "Server Installation Completed" 通知会持续存在并遮挡续期按钮
@@ -1065,11 +1139,10 @@ def run_single_server(sb, site_url: str, server_num: str, region: str,
                 """, sel)
                 log.info("adRewardReady set: %s", _ar)
                 # 改进: 用 ActionChains 真实鼠标点击 (替代 sb.click + JS click)
-                # 原因: JS .click() 只触发原生 click 事件, 不触发 Alpine @click 监听器
-                # ActionChains 模拟真实鼠标移动+点击, 能正确触发 @click handler
+                # 关键: 必须用 actions.click(elem) 而不是 execute_script("elem.click()")
+                # 因为 Alpine @click 用事件代理, JS .click() 不触发 Alpine handler
                 try:
                     from selenium.webdriver.common.action_chains import ActionChains
-                    from selenium.webdriver.common.actions.mouse_button import MouseButton
                     elem = sb.driver.find_element("css selector", sel)
                     # 先滚动到可见
                     sb.driver.execute_script(
@@ -1077,37 +1150,41 @@ def run_single_server(sb, site_url: str, server_num: str, region: str,
                         elem
                     )
                     human_wait(0.3, 0.6)
-                    # 用 ActionChains: 移动到元素中心 + 按下 + 释放 (真实点击)
+                    # 关键: 用 ActionChains.click() 真实鼠标点击 (会触发 Alpine @click)
                     actions = ActionChains(sb.driver)
-                    actions.move_to_element(elem).perform()
-                    human_wait(0.2, 0.4)
-                    # 用原生 click (会触发 Alpine @click, JS .click() 不会)
-                    sb.driver.execute_script("arguments[0].click();", elem)
-                    log.info("✅ 已用 ActionChains 真实点击按钮")
-                    human_wait(0.3, 0.5)
-                    # 额外: 用 PyAutoGUI/xdotool 在按钮位置真实点击 (兜底)
+                    actions.move_to_element(elem).pause(0.2).click(elem).perform()
+                    log.info("✅ 已用 ActionChains 真实鼠标点击按钮 (触发 Alpine @click)")
+                    human_wait(0.5, 1.0)
+                    # 兜底: 用 dispatchEvent 模拟完整鼠标事件序列 (mousedown + mouseup + click)
+                    # 有些 Alpine 组件需要 mousedown 才能触发
                     try:
-                        # 获取按钮在屏幕上的位置 (相对浏览器窗口)
+                        sb.driver.execute_script("""
+                            var el = arguments[0];
+                            el.dispatchEvent(new MouseEvent('mousedown', {bubbles: true, cancelable: true, view: window}));
+                            el.dispatchEvent(new MouseEvent('mouseup', {bubbles: true, cancelable: true, view: window}));
+                            el.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}));
+                        """, elem)
+                        log.info("✅ 已用 dispatchEvent 派发完整鼠标事件序列 (兜底)")
+                    except Exception:
+                        pass
+                    human_wait(0.3, 0.5)
+                    # 终极兜底: 用 xdotool 在元素屏幕位置真实点击
+                    try:
                         rect = sb.driver.execute_script(
                             "var r = arguments[0].getBoundingClientRect();"
                             "return {x: r.x + r.width/2, y: r.y + r.height/2};",
                             elem
                         )
                         if rect:
-                            # 窗口位置 + 元素位置 = 屏幕位置
-                            # xvfb 下窗口通常从 (0,0) 开始
                             click_x = int(rect['x'])
-                            click_y = int(rect['y']) + 80  # +80 是浏览器标题栏+地址栏高度
+                            click_y = int(rect['y']) + 80  # +80 浏览器标题栏
                             import subprocess
                             subprocess.run(
                                 ["xdotool", "mousemove", str(click_x), str(click_y)],
                                 timeout=2, stderr=subprocess.DEVNULL
                             )
                             human_wait(0.2, 0.3)
-                            subprocess.run(
-                                ["xdotool", "click", "1"],
-                                timeout=2, stderr=subprocess.DEVNULL
-                            )
+                            subprocess.run(["xdotool", "click", "1"], timeout=2, stderr=subprocess.DEVNULL)
                             log.info(f"✅ 已用 xdotool 在 ({click_x}, {click_y}) 真实点击")
                     except Exception as xdotool_e:
                         log.warning(f"xdotool 兜底点击失败 (可忽略): {xdotool_e}")
@@ -1116,7 +1193,7 @@ def run_single_server(sb, site_url: str, server_num: str, region: str,
                     try:
                         sb.click(sel, timeout=5)
                     except Exception as click_e2:
-                        log.warning(f"sb.click 也失败 ({click_e2}), 尝试 JS click")
+                        log.warning(f"sb.click 也失败 ({click_e2}), 尝试 JS dispatchEvent")
                         sb.execute_script(
                             "var el = document.querySelector(arguments[0]); "
                             "if (el) { el.scrollIntoView({block: 'center'}); "
@@ -1298,64 +1375,7 @@ def run_single_server(sb, site_url: str, server_num: str, region: str,
     bypass_turnstile(sb)
 
     # 关键: 点击 +90 min 后, 监听网络请求和 DOM 变化
-    # 之前点击后时间没变化, 说明续期请求没真正发出或没生效
-    # 现在改为: 点击后多次截图 + 监听 DOM 变化 + 等待更长时间
-
-    # 注入网络请求监听器 (在点击前注入)
-    # 关键: 记录请求 body, 这样能看到 Livewire 请求调用的方法名 (如 extend)
-    try:
-        sb.execute_script("""
-            window.__renew_xhr_log = [];
-            window.__renew_fetch_log = [];
-            // 拦截 XHR
-            var origOpen = XMLHttpRequest.prototype.open;
-            var origSend = XMLHttpRequest.prototype.send;
-            XMLHttpRequest.prototype.open = function(method, url) {
-                this.__method = method;
-                this.__url = url;
-                return origOpen.apply(this, arguments);
-            };
-            XMLHttpRequest.prototype.send = function(body) {
-                var self = this;
-                var bodyStr = '';
-                try { bodyStr = typeof body === 'string' ? body : JSON.stringify(body); } catch(e) {}
-                this.addEventListener('load', function() {
-                    window.__renew_xhr_log.push({
-                        method: self.__method, url: self.__url,
-                        status: self.status,
-                        body: bodyStr.substring(0, 500),
-                        response: (self.responseText || '').substring(0, 300)
-                    });
-                });
-                return origSend.apply(this, arguments);
-            };
-            // 拦截 fetch (记录 body)
-            var origFetch = window.fetch;
-            window.fetch = function(input, init) {
-                var url = typeof input === 'string' ? input : input.url;
-                var method = (init && init.method) || 'GET';
-                var bodyStr = '';
-                try {
-                    if (init && init.body) {
-                        bodyStr = typeof init.body === 'string' ? init.body : JSON.stringify(init.body);
-                    }
-                } catch(e) {}
-                return origFetch.apply(this, arguments).then(function(resp) {
-                    resp.clone().text().then(function(t) {
-                        window.__renew_fetch_log.push({
-                            method: method, url: url,
-                            status: resp.status,
-                            body: bodyStr.substring(0, 500),
-                            response: t.substring(0, 300)
-                        });
-                    });
-                    return resp;
-                });
-            };
-        """)
-        log.info("📡 网络请求监听器已注入 (含 body 记录)")
-    except Exception as e:
-        log.warning(f"注入网络监听器失败: {e}")
+    # 网络监听器已在点击按钮之前注入 (见上方), 这里跳过
 
     log.info("⏳ 等待续期生效 (点击 +90 min 后)...")
     # 多次截图 + 检测 DOM 变化
