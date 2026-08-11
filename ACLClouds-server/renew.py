@@ -133,7 +133,14 @@ def get_xsrf(session):
 
 
 def api_get(session, path):
-    return session.get(f"{BASE_URL}{path}", timeout=30)
+    # 关键修复: GET 请求也必须带 X-XSRF-TOKEN 头
+    # Laravel 框架对所有 /api/* 路径都验证 CSRF (不只 POST)
+    # 之前只 POST 带 token, GET 没带, 导致服务器返回 401 (误报 Cookie 过期)
+    headers = {}
+    token = get_xsrf(session)
+    if token:
+        headers["X-XSRF-TOKEN"] = token
+    return session.get(f"{BASE_URL}{path}", headers=headers, timeout=30)
 
 
 def api_post(session, path, payload=None):
@@ -218,8 +225,26 @@ def process_account(cookie_str, threshold_hours):
     try:
         test_r = api_get(session, "/api/client")
         if test_r.status_code == 401:
-            log("❌ 登录失败: Cookie 已过期或无效")
+            log(f"❌ 登录失败: Cookie 已过期或无效 (HTTP 401)")
+            # 关键诊断: 检查 XSRF token 是否被正确设置
+            xsrf = get_xsrf(session)
+            if not xsrf:
+                log("⚠️ XSRF-TOKEN 未找到! 请确认 Cookie 包含 'XSRF-TOKEN=xxx'")
+            else:
+                log(f"✅ XSRF-TOKEN 已设置 (前 20 字符): {xsrf[:20]}...")
+            # 检查 session cookie 是否存在
+            sess = session.cookies.get("aclclouds_session", domain="aclclouds.com")
+            if not sess:
+                log("⚠️ aclclouds_session Cookie 未找到!")
+                log("   检查 ACL_COOKIES Secret 是否包含 'aclclouds_session=' 或 '__Host-aclclouds_session='")
+            else:
+                log(f"✅ aclclouds_session 已设置 (前 20 字符): {sess[:20]}...")
+            log(f"   服务器响应: {test_r.text[:300]}")
             return {"servers": [], "success": 0, "skipped": 0, "failed": 1, "error": "401 Unauthorized"}
+        if test_r.status_code != 200:
+            log(f"⚠️ 登录测试返回 HTTP {test_r.status_code}")
+            log(f"   响应: {test_r.text[:300]}")
+            return {"servers": [], "success": 0, "skipped": 0, "failed": 1, "error": f"HTTP {test_r.status_code}"}
         log("✅ 登录成功")
     except Exception as e:
         log(f"❌ 登录测试失败: {e}")
