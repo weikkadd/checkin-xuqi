@@ -2022,7 +2022,9 @@ def process_account(account: dict) -> dict:
                 tg(summary)
 
             # 总汇总只在有失败时发, 避免刷屏
-            if fail_count > 0:
+            # 改进: 单服务器场景下不再重复发送 (上面 tg(summary) 已经发过单服务器汇总)
+            # 只有当服务器数量 > 1 且有失败时才发总汇总
+            if fail_count > 0 and len(servers_to_renew) > 1:
                 msg = (
                     f"🎮 Gaming4Free 续期通知\n\n"
                     f"⚠️ 部分失败\n"
@@ -2184,10 +2186,10 @@ def main():
             tg(f"🎮 Gaming4Free 续期通知\n\n❌ 账号 {acc['name']} 崩溃\n{e}")
         all_results.append(res)
 
-    # 总汇总只在有失败时发 (成功时每个服务器已经发过了)
+    # 总汇总只在有失败且账号数 > 1 时发 (单账号场景上面已经发过了)
     total_renewed = sum(r.get("renewed", 0) for r in all_results if r.get("ok"))
     total_failed = sum(r.get("failed", 0) for r in all_results if r.get("ok"))
-    if total_failed > 0:
+    if total_failed > 0 and len(all_results) > 1:
         summary = (
             f"🎮 Gaming4Free 续期通知\n\n"
             f"⚠️ 部分失败\n"
