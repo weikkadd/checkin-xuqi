@@ -1543,20 +1543,42 @@ def process_account(account: dict) -> dict:
         proxy_port = int(port_match.group(1)) if port_match else 1080
 
     # 预检代理端口
+    proxy_available = False
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(3)
         s.connect(("127.0.0.1", proxy_port))
         s.close()
-        log.info(f"✅ 代理 SOCKS5 端口 {proxy_port} 可用")
+        log.info("proxy port %s listening", proxy_port)
+        try:
+            _r = requests.get(
+                "https://api.ipify.org",
+                proxies={"http": PROXY_URL, "https": PROXY_URL},
+                timeout=10
+            )
+            if _r.status_code == 200 and _r.text.strip():
+                log.info("proxy route OK, exit IP: %s", _r.text.strip())
+                proxy_available = True
+            else:
+                log.warning("proxy returned HTTP %s, falling back to direct", _r.status_code)
+        except Exception as _e:
+            log.warning("proxy route failed (%s), falling back to direct", _e)
     except Exception:
-        log.warning(f"⚠️ 代理端口 {proxy_port} 不可达，将直连")
+        log.warning("proxy port %s unreachable, using direct", proxy_port)
 
-    CHROMIUM_ARGS = (
-        f"--no-sandbox,--disable-dev-shm-usage,--disable-gpu,"
-        f"--window-size=1280,720,--disable-blink-features=AutomationControlled,"
-        f"--disable-infobars,--disable-popup-blocking,--proxy-server={PROXY_URL}"
-    )
+    if proxy_available:
+        CHROMIUM_ARGS = (
+            "--no-sandbox,--disable-dev-shm-usage,--disable-gpu,"
+            "--window-size=1280,720,--disable-blink-features=AutomationControlled,"
+            "--disable-infobars,--disable-popup-blocking,"
+            "--proxy-server=%s" % PROXY_URL
+        )
+    else:
+        CHROMIUM_ARGS = (
+            "--no-sandbox,--disable-dev-shm-usage,--disable-gpu,"
+            "--window-size=1280,720,--disable-blink-features=AutomationControlled,"
+            "--disable-infobars,--disable-popup-blocking"
+        )
 
     log.info(f"正在启动浏览器 (uc=True, xvfb=True, proxy={PROXY_URL})...")
     from seleniumbase import SB
