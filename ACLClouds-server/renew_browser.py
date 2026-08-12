@@ -106,18 +106,35 @@ def screenshot(sb, name: str):
 # API 函数 (从 renew.py 移植)
 # ---------------------------------------------------------------------------
 def build_session(cookie_str):
-    """构造 requests session, 注入 cookie, 用于 API 调用"""
+    """构造 requests session, 注入 cookie, 用于 API 调用
+
+    关键修复: 不再用 s.cookies.set (会被 __Host- 前缀和 host-only 属性搞乱)
+    而是直接把原始 Cookie 字符串放到 Cookie header
+    这样浏览器能识别的格式, requests 也能识别
+    """
     s = requests.Session()
+    # 真实浏览器 UA - ACLClouds 可能会风控非浏览器 UA
+    browser_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
     s.headers.update({
-        "User-Agent": UA,
+        "User-Agent": browser_ua,
         "Accept": "application/json, text/plain, */*",
         "Accept-Language": "en-US,en;q=0.9",
         "Origin": BASE_URL,
         "Referer": f"{BASE_URL}/projects",
         "X-Requested-With": "XMLHttpRequest",
         "Accept-Encoding": "gzip, deflate, br",
+        "sec-ch-ua": '"Not.A)Brand";v="8", "Chromium";v="126", "Google Chrome";v="126"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
     })
-    # 解析 cookie 字符串 - 处理 __Host- 和 __Secure- 前缀
+    # 关键: 直接用 Cookie header 传完整字符串
+    # 不再拆解, 不再处理 __Host- 前缀
+    # 这样浏览器能用的 Cookie, requests 也能用
+    s.headers["Cookie"] = cookie_str.strip()
+    # 同时也用 s.cookies 兼容 (让 get_xsrf 能拿到 token)
     for kv in cookie_str.split(";"):
         kv = kv.strip()
         if not kv or "=" not in kv:
@@ -130,12 +147,25 @@ def build_session(cookie_str):
             clean_k = k[7:]
         elif k.startswith("__Secure-"):
             clean_k = k[9:]
-        s.cookies.set(clean_k, v, domain="aclclouds.com", path="/")
+        try:
+            s.cookies.set(clean_k, v, domain="aclclouds.com", path="/")
+        except Exception:
+            pass
     return s
 
 
 def get_xsrf(session):
-    """从 cookie 中提取并解码 XSRF-TOKEN"""
+    """从 cookie 中提取并解码 XSRF-TOKEN
+    优先从 Cookie header 解析 (更可靠), 其次从 session.cookies"""
+    # 优先从 Cookie header 解析
+    cookie_header = session.headers.get("Cookie", "")
+    if cookie_header:
+        for kv in cookie_header.split(";"):
+            kv = kv.strip()
+            if kv.startswith("XSRF-TOKEN="):
+                token = kv[len("XSRF-TOKEN="):]
+                return urllib.parse.unquote(token)
+    # 兜底: 从 session.cookies
     token = session.cookies.get("XSRF-TOKEN", domain="aclclouds.com")
     if not token:
         return None
@@ -219,11 +249,39 @@ def renew_server_api(session, sid):
 
 
 def test_login(session):
-    """测试登录状态, 返回 True/False"""
+    """测试登录状态, 返回 True/False
+    关键: 加详细诊断日志, 帮用户排查 401 原因"""
     try:
         r = api_get(session, "/api/client")
-        return r.status_code != 401
-    except Exception:
+        if r.status_code == 200:
+            log.info("✅ API 登录验证通过")
+            return True
+        if r.status_code == 401:
+            log.error(f"❌ 登录失败: HTTP 401 - Cookie 已过期或无效")
+            # 关键诊断: 检查 Cookie 是否被发送
+            cookie_header = session.headers.get("Cookie", "")
+            if not cookie_header:
+                log.error("⚠️ Cookie header 为空! ACL_COOKIES Secret 可能没设置")
+            else:
+                # 检查关键 cookie 是否在 header 里
+                has_xsrf = "XSRF-TOKEN=" in cookie_header
+                has_session = ("aclclouds_session=" in cookie_header or
+                               "__Host-aclclouds_session=" in cookie_header)
+                log.info(f"   Cookie header 长度: {len(cookie_header)}")
+                log.info(f"   XSRF-TOKEN 在 header: {'✅' if has_xsrf else '❌'}")
+                log.info(f"   aclclouds_session 在 header: {'✅' if has_session else '❌'}")
+                # 检查 XSRF token 是否能被 get_xsrf 提取
+                xsrf = get_xsrf(session)
+                if xsrf:
+                    log.info(f"   X-XSRF-TOKEN 已设置: {xsrf[:30]}...")
+                else:
+                    log.error("⚠️ 无法从 Cookie 提取 XSRF-TOKEN (将无法通过 CSRF 验证)")
+            log.info(f"   服务器响应: {r.text[:200]}")
+            return False
+        log.warning(f"⚠️ 登录测试返回 HTTP {r.status_code}: {r.text[:200]}")
+        return False
+    except Exception as e:
+        log.error(f"❌ 登录测试异常: {e}")
         return False
 
 def human_wait(min_s=2, max_s=4):
@@ -432,11 +490,22 @@ def process_account(acc: dict) -> dict:
 
         # 第一步: 用 API 获取服务器列表 (快, 不用浏览器)
         log.info("📋 用 API 获取服务器列表...")
+        # 诊断: 打印 Cookie 字符串前缀 (不暴露完整值)
+        if cookie:
+            # 找关键 cookie 是否在
+            has_xsrf = "XSRF-TOKEN=" in cookie
+            has_session = ("aclclouds_session=" in cookie or
+                            "__Host-aclclouds_session=" in cookie)
+            log.info(f"   Cookie 长度: {len(cookie)}, XSRF-TOKEN: {'✅' if has_xsrf else '❌'}, session: {'✅' if has_session else '❌'}")
+        else:
+            log.error("❌ Cookie 为空! ACL_COOKIES Secret 未配置")
+            return {"name": name, "ok": False, "msg": "Cookie 未配置",
+                    "renewed": 0, "failed": 1}
+
         session = build_session(cookie)
 
         if not test_login(session):
-            log.error("❌ 登录失败: Cookie 已过期或无效")
-            return {"name": name, "ok": False, "msg": "Cookie 过期",
+            return {"name": name, "ok": False, "msg": "Cookie 过期或无效 (401)",
                     "renewed": 0, "failed": 1}
         log.info("✅ API 登录验证通过")
 
