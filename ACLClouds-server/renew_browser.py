@@ -108,9 +108,9 @@ def screenshot(sb, name: str):
 def build_session(cookie_str):
     """构造 requests session, 注入 cookie, 用于 API 调用
 
-    关键修复: 不再用 s.cookies.set (会被 __Host- 前缀和 host-only 属性搞乱)
-    而是直接把原始 Cookie 字符串放到 Cookie header
-    这样浏览器能识别的格式, requests 也能识别
+    关键修复: 不再用 s.cookies.set (requests 的 prepare_cookies 会用 cookiejar
+    覆盖手动设置的 Cookie header, 而且 __Host- 前缀会被剥离导致服务器不识别)
+    而是保存原始 Cookie 字符串, 在 _send_with_cookie 里强制覆盖。
     """
     s = requests.Session()
     # 真实浏览器 UA - ACLClouds 可能会风控非浏览器 UA
@@ -130,33 +130,15 @@ def build_session(cookie_str):
         "sec-fetch-mode": "cors",
         "sec-fetch-site": "same-origin",
     })
-    # 关键: 直接用 Cookie header 传完整字符串
-    # 不再拆解, 不再处理 __Host- 前缀
-    # 这样浏览器能用的 Cookie, requests 也能用
-    s.headers["Cookie"] = cookie_str.strip()
-    # 同时也用 s.cookies 兼容 (让 get_xsrf 能拿到 token)
-    for kv in cookie_str.split(";"):
-        kv = kv.strip()
-        if not kv or "=" not in kv:
-            continue
-        k, v = kv.split("=", 1)
-        k = k.strip()
-        v = v.strip()
-        clean_k = k
-        if k.startswith("__Host-"):
-            clean_k = k[7:]
-        elif k.startswith("__Secure-"):
-            clean_k = k[9:]
-        try:
-            s.cookies.set(clean_k, v, domain="aclclouds.com", path="/")
-        except Exception:
-            pass
+    # 保存原始 Cookie 字符串 (含 __Host- 前缀, 原样发送)
+    s._raw_cookie = cookie_str.strip()
+    # 不写入 s.cookies, 防止 prepare_cookies 用剥离前缀的名字重建 header
     return s
 
 
 def get_xsrf(session):
     """从 cookie 中提取并解码 XSRF-TOKEN
-    优先从 Cookie header 解析 (更可靠), 其次从 session.cookies"""
+    优先从 Cookie header 解析 (更可靠), 其次从 _raw_cookie"""
     # 优先从 Cookie header 解析
     cookie_header = session.headers.get("Cookie", "")
     if cookie_header:
@@ -165,20 +147,37 @@ def get_xsrf(session):
             if kv.startswith("XSRF-TOKEN="):
                 token = kv[len("XSRF-TOKEN="):]
                 return urllib.parse.unquote(token)
-    # 兜底: 从 session.cookies
-    token = session.cookies.get("XSRF-TOKEN", domain="aclclouds.com")
-    if not token:
-        return None
-    return urllib.parse.unquote(token)
+    # 兜底: 从 _raw_cookie
+    if hasattr(session, '_raw_cookie') and session._raw_cookie:
+        for kv in session._raw_cookie.split(";"):
+            kv = kv.strip()
+            if kv.startswith("XSRF-TOKEN="):
+                token = kv[len("XSRF-TOKEN="):]
+                return urllib.parse.unquote(token)
+    return None
+
+
+def _send_with_cookie(session, method, path, headers=None, json=None, timeout=30):
+    """发送请求, 确保原始 Cookie 字符串不被 requests 篡改。
+    构造 PreparedRequest 后强制覆盖 Cookie header (requests 的 prepare_cookies
+    会先删除已有的 cookie header, 再从 cookiejar 重建, 导致 __Host- 前缀丢失)。"""
+    import requests as _requests
+    req = _requests.Request(method, f"{BASE_URL}{path}",
+                            headers=headers or {}, json=json)
+    prepared = session.prepare_request(req)
+    # 关键修复: prepare_cookies 已覆盖, 这里强制写回原始 Cookie
+    if hasattr(session, '_raw_cookie') and session._raw_cookie:
+        prepared.headers['Cookie'] = session._raw_cookie
+    return session.send(prepared, timeout=timeout)
 
 
 def api_get(session, path):
-    """GET 请求, 必须带 X-XSRF-TOKEN (Laravel CSRF)"""
+    """GET (Laravel CSRF)"""
     headers = {}
     token = get_xsrf(session)
     if token:
         headers["X-XSRF-TOKEN"] = token
-    return session.get(f"{BASE_URL}{path}", headers=headers, timeout=30)
+    return _send_with_cookie(session, 'GET', path, headers=headers)
 
 
 def api_post(session, path, payload=None):
@@ -186,7 +185,8 @@ def api_post(session, path, payload=None):
     token = get_xsrf(session)
     if token:
         headers["X-XSRF-TOKEN"] = token
-    return session.post(f"{BASE_URL}{path}", headers=headers, json=payload or {}, timeout=30)
+    return _send_with_cookie(session, 'POST', path, headers=headers,
+                             json=payload or {})
 
 
 def list_servers(session):
@@ -258,24 +258,27 @@ def test_login(session):
             return True
         if r.status_code == 401:
             log.error(f"❌ 登录失败: HTTP 401 - Cookie 已过期或无效")
-            # 关键诊断: 检查 Cookie 是否被发送
-            cookie_header = session.headers.get("Cookie", "")
-            if not cookie_header:
-                log.error("⚠️ Cookie header 为空! ACL_COOKIES Secret 可能没设置")
+            # 关键诊断: 从 _raw_cookie 检查 (不再用 session.headers, 因为已经改了)
+            raw_cookie = getattr(session, '_raw_cookie', '')
+            if not raw_cookie:
+                log.error("⚠️ _raw_cookie 为空! ACL_COOKIES Secret 可能没设置")
             else:
-                # 检查关键 cookie 是否在 header 里
-                has_xsrf = "XSRF-TOKEN=" in cookie_header
-                has_session = ("aclclouds_session=" in cookie_header or
-                               "__Host-aclclouds_session=" in cookie_header)
-                log.info(f"   Cookie header 长度: {len(cookie_header)}")
-                log.info(f"   XSRF-TOKEN 在 header: {'✅' if has_xsrf else '❌'}")
-                log.info(f"   aclclouds_session 在 header: {'✅' if has_session else '❌'}")
+                # 检查关键 cookie 是否在
+                has_xsrf = "XSRF-TOKEN=" in raw_cookie
+                has_session = ("aclclouds_session=" in raw_cookie or
+                               "__Host-aclclouds_session=" in raw_cookie)
+                log.info(f"   Cookie 长度: {len(raw_cookie)}")
+                log.info(f"   XSRF-TOKEN 在 raw_cookie: {'✅' if has_xsrf else '❌'}")
+                log.info(f"   aclclouds_session 在 raw_cookie: {'✅' if has_session else '❌'}")
+                log.info(f"   __Host- 前缀在 raw_cookie: {'✅' if '__Host-' in raw_cookie else '❌'}")
                 # 检查 XSRF token 是否能被 get_xsrf 提取
                 xsrf = get_xsrf(session)
                 if xsrf:
                     log.info(f"   X-XSRF-TOKEN 已设置: {xsrf[:30]}...")
                 else:
                     log.error("⚠️ 无法从 Cookie 提取 XSRF-TOKEN (将无法通过 CSRF 验证)")
+                # 提示已修复 __Host- 前缀问题
+                log.info("   ℹ️ _send_with_cookie 会在请求头中强制写入 _raw_cookie (含 __Host- 前缀)")
             log.info(f"   服务器响应: {r.text[:200]}")
             return False
         log.warning(f"⚠️ 登录测试返回 HTTP {r.status_code}: {r.text[:200]}")
@@ -802,4 +805,3 @@ if __name__ == "__main__":
     except Exception as e:
         log.exception(f"未捕获异常: {e}")
         tg(f"🎮 ACLClouds 续期通知\n\n💥 脚本崩溃\n📊 {e}")
-        sys.exit(1)
